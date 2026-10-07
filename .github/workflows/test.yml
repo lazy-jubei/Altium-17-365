@@ -1,0 +1,13 @@
+name: Tests
+on: [push, pull_request]
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - run: dotnet run --project tests/WorkspaceTests.csproj -f net8.0
+      - run: dotnet run --project tests/InstallerTests.csproj
+      - run: python3 -m unittest discover -s tests -p 'test_*.py' -v

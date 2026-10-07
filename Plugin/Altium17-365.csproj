@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework><OutputType>Library</OutputType>
+    <AssemblyName>Altium17-365</AssemblyName><RootNamespace>Altium17Cloud</RootNamespace>
+    <PlatformTarget>x86</PlatformTarget><LangVersion>12</LangVersion><Version>0.1.0</Version>
+    <UseWPF>true</UseWPF><UseWindowsForms>true</UseWindowsForms><EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath><DebugType>embedded</DebugType>
+    <AltiumInstallDir Condition="'$(AltiumInstallDir)' == ''">$(ALTIUM_INSTALL_DIR)</AltiumInstallDir>
+    <AltiumInstallDir Condition="'$(AltiumInstallDir)' == ''">C:\Program Files (x86)\Altium\AD17</AltiumInstallDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" Version="1.0.3" PrivateAssets="all"/>
+    <Reference Include="System.Net.Http"/>
+    <ProjectReference Include="../Core/Altium17-365.Core.csproj"/>
+    <Reference Include="Altium.SDK"><HintPath>$(AltiumInstallDir)/System/Altium.SDK.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Altium.SDK.Interfaces"><HintPath>$(AltiumInstallDir)/System/Altium.SDK.Interfaces.dll</HintPath><Private>false</Private></Reference>
+    <Content Include="Altium17-365.Ins;Altium17-365.rcs;../THIRD-PARTY-NOTICES.txt"><CopyToOutputDirectory>Always</CopyToOutputDirectory><Link>%(Filename)%(Extension)</Link></Content>
+  </ItemGroup>
+  <Target Name="ValidateAltiumSdk" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="!Exists('$(AltiumInstallDir)/System/Altium.SDK.dll')" Text="Set AltiumInstallDir (or ALTIUM_INSTALL_DIR) to your AD17 installation."/>
+  </Target>
+  <Target Name="WriteAltiumTarget" AfterTargets="Build">
+    <WriteLinesToFile File="$(TargetDir)Altium17-365.target.json" Lines="{&quot;altiumVersion&quot;: &quot;17&quot;, &quot;framework&quot;: &quot;net48&quot;, &quot;architecture&quot;: &quot;x86&quot;}" Overwrite="true"/>
+  </Target>
+</Project>

@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>Altium-17-365-Setup</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <PlatformTarget>x86</PlatformTarget>
+    <UseWindowsForms>true</UseWindowsForms>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <LangVersion>12.0</LangVersion>
+    <Version>0.1.0</Version>
+    <DebugType>embedded</DebugType>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" Version="1.0.3" PrivateAssets="all" />
+    <EmbeddedResource Include="../Plugin/bin/$(Configuration)/Altium17-365.dll;../Plugin/bin/$(Configuration)/Altium17-365.Core.dll;../Plugin/bin/$(Configuration)/Altium.Auth.dll;../Plugin/bin/$(Configuration)/Newtonsoft.Json.dll;../Plugin/bin/$(Configuration)/Altium17-365.Ins;../Plugin/bin/$(Configuration)/Altium17-365.rcs;../Plugin/bin/$(Configuration)/Altium17-365.target.json;../Plugin/bin/$(Configuration)/THIRD-PARTY-NOTICES.txt">
+      <LogicalName>Payload.%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+</Project>

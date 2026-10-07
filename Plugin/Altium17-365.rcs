@@ -1,0 +1,34 @@
+PL
+    Altium17-365:Connect
+    Command='Altium17-365:Connect'
+    Caption='Altium 365 (AD17)'
+    Image=''
+    Shortcut1=''
+    Shortcut2=''
+    Params=''
+    Description='Connect to an Altium 365 workspace'
+End
+
+Insertion _Cloud1 TargetID='MNNoDocument_File' RefID0='NoDoc'
+    Link _Cloud2 PLID='Altium17-365:Connect' End
+End
+
+Insertion _Cloud3 TargetID='MNSchematic_File' RefID0='SchDoc_File'
+    Link _Cloud4 PLID='Altium17-365:Connect' End
+End
+
+Insertion _Cloud5 TargetID='MNSchematic_Tools10' RefID0='SchDoc_Tools'
+    Link _Cloud6 PLID='Altium17-365:Connect' End
+End
+
+Insertion _Cloud7 TargetID='MNSchematic_SchLibMenuTools10' RefID0='SchLib_Tools'
+    Link _Cloud8 PLID='Altium17-365:Connect' End
+End
+
+Insertion _Cloud9 TargetID='MNPCB_Tools10' RefID0='PcbDoc_Tools'
+    Link _Cloud10 PLID='Altium17-365:Connect' End
+End
+
+Insertion _Cloud11 TargetID='MNPCBLib_Tools10' RefID0='PcbLib_Tools'
+    Link _Cloud12 PLID='Altium17-365:Connect' End
+End
