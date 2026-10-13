@@ -9,6 +9,41 @@ PL
     Description='Connect to an Altium 365 workspace'
 End
 
+PL
+    Altium17-365:SaveToServer
+    Command='Altium17-365:SaveToServer'
+    Caption='Save to Server...'
+    Image='FILESAVE.PNG'
+    Shortcut1=''
+    Shortcut2=''
+    Params=''
+    Description='Review and save changed project files to Altium 365'
+End
+
+Insertion _ServerSaveSch TargetID='MNSchematic_File' RefID0='SchDoc_File'
+    Link _ServerSaveSchLink PLID='Altium17-365:SaveToServer' End
+End
+
+Insertion _ServerSavePcb TargetID='MNPCB_File' RefID0='PcbDoc_File'
+    Link _ServerSavePcbLink PLID='Altium17-365:SaveToServer' End
+End
+
+Insertion _ServerSaveSchLib TargetID='MNSchematic_SchLibMenu10' RefID0='SchLib_File'
+    Link _ServerSaveSchLibLink PLID='Altium17-365:SaveToServer' End
+End
+
+Insertion _ServerSavePcbLib TargetID='MNPCBLib_10' RefID0='PcbLib_File'
+    Link _ServerSavePcbLibLink PLID='Altium17-365:SaveToServer' End
+End
+
+Insertion _ServerSaveOutJob TargetID='MNJobManagerFile' RefID0='Job_File'
+    Link _ServerSaveOutJobLink PLID='Altium17-365:SaveToServer' End
+End
+
+Insertion _ServerSaveProject TargetID='MNProjectViewFile' RefID0='Project_File'
+    Link _ServerSaveProjectLink PLID='Altium17-365:SaveToServer' End
+End
+
 Insertion _Cloud1 TargetID='MNNoDocument_File' RefID0='NoDoc'
     Link _Cloud2 PLID='Altium17-365:Connect' End
 End

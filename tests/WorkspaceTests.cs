@@ -89,6 +89,7 @@ internal static class Program
             session.Disconnect();
             Require(session.Connected == null && !session.SignedIn, "disconnect clears session state");
             await Reject(() => session.ProjectsAsync(null, none), "cannot fetch after disconnect");
+            await Reject(() => session.AccessTokenAsync(none), "Git cannot reuse credentials after disconnect");
             await Reject(() => session.ConnectAsync(null, "test-token", none), "missing workspace gets a clear error");
             await Reject(() => session.SignInAsync("", WorkspaceApi.Regions[0].Value, _ => {}, none), "browser login requires registered ID");
             await Reject(() => session.SignInAsync("test-id", "invalid", _ => {}, none), "invalid region rejected before browser sign-in");
@@ -111,6 +112,7 @@ internal static class Program
             await session.ConnectAsync(workspaces[0], null, none);
             Require(flow.Forms.Exists(form => form.Contains("grant_type=refresh_token") && form.Contains("refresh_token=global-refresh")), "refreshes expired global token before workspace exchange");
             Require(flow.Forms.Exists(form => form.Contains("subject_token=global-refreshed") && form.Contains("a365%3Aworkspace%3Aid-1")), "exchanges refreshed global token for chosen workspace scope");
+            Require(await session.AccessTokenAsync(none) == "workspace-refreshed" && flowApi.Responses.Count == 1, "Git gets a refreshed workspace token without another GraphQL query");
             await session.ProjectsAsync(null, none);
             Require(flow.Forms.Exists(form => form.Contains("refresh_token=workspace-refresh")), "refreshes workspace token using its own issuing client");
             Require(session.Connected == workspaces[0], "OAuth workspace query establishes connection");
