@@ -8,6 +8,7 @@ Source build verified on 13 October 2026:
 - The transport tests substitute a local bare repository for the Altium URL. They verify real Git operations and process-local credentials; they do not authenticate to Altium 365.
 - 65 workspace/authentication checks pass on .NET 8, including refreshing the Workspace token for Git without another project-list query and refusing access after disconnect.
 - The x86 .NET Framework 4.8 plug-in, Windows installer and Git test executable build against the installed AD17 SDK. Git tests also run in Windows CI.
+- All 42 Git checks also pass under Windows/.NET Framework 4.8 in CI, including real clone, pull, push, path quoting and process cancellation.
 - Git for Windows MinGit 2.56.0.2 (32-bit) was downloaded from its official release and its SHA-256 verified before local installation. The current Wine session did not complete the CLI launch, so these new checks have not been verified under Wine.
 
 The new Git tab, opening projects through the running AD17 executable and authenticated clone/pull/push against a real Altium Workspace remain **unverified**. Direct Git mode requires a repository URL and Workspace token, but does not call GraphQL or use an OAuth client ID. The project-browser route still requires API access. No existing AD26/browser token is harvested or copied.
