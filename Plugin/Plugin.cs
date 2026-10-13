@@ -43,7 +43,7 @@ namespace Altium17Cloud
             this.client = client;
             if (!client.ProductInfo().SupportsUIFeature("NoGUI", false))
             {
-                panel = new WorkspacePanelView();
+                panel = new WorkspacePanelView(client);
                 AddView(panel);
                 client.AddServerView(panel);
             }
@@ -66,27 +66,73 @@ namespace Altium17Cloud
                 }
                 catch { MessageBox.Show("Unable to open the Altium 365 panel.", "Altium 365 (AD17)", MessageBoxButtons.OK, MessageBoxIcon.Error); }
             }));
+            ((CommandLauncher)CommandLauncher).RegisterCommand("SaveToServer", new CommandProc((IServerDocumentView view, ref string parameters) =>
+            {
+                if (panel == null) return;
+                var gui = client.GetGUIManager();
+                gui.SetPanelVisibleInCurrentForm(PanelName, true); gui.SetPanelActiveInCurrentForm(PanelName);
+                panel.RequestServerSave();
+            }), new GetStateProc((IServerDocumentView view, ref string parameters, ref bool enabled, ref bool check, ref bool visible, ref string caption, ref string image) =>
+            {
+                visible = panel != null && panel.ServerSaveMatchesContext(view) && panel.HasServerChanges;
+                enabled = visible && !panel.IsBusy; check = false; caption = "Save to Server…";
+            }));
         }
     }
     internal sealed class WorkspacePanelView : ServerPanelView
     {
-        internal WorkspacePanelView() : base(new WorkspacePanel(), WorkspaceModule.PanelName, "Altium 365 (AD17)") { }
+        private readonly WorkspacePanel form;
+        internal WorkspacePanelView(IClient client) : this(new WorkspacePanel(client)) { }
+        private WorkspacePanelView(WorkspacePanel form) : base(form, WorkspaceModule.PanelName, "Altium 365 (AD17)") { this.form = form; }
+        internal bool HasServerChanges => form.HasServerChanges;
+        internal bool IsBusy => form.IsBusy;
+        internal bool ServerSaveMatchesContext(IServerDocumentView context) => form.ServerSaveMatchesContext(context);
+        internal void RequestServerSave() => form.RequestServerSave();
     }
     internal sealed class WorkspacePanel : ServerPanelForm
     {
         private readonly WorkspaceView view;
-        internal WorkspacePanel()
+        private readonly IClient client;
+        private readonly WorkspaceDocuments documents;
+        private readonly NotificationHandler notifications;
+        internal WorkspacePanel(IClient client)
         {
+            this.client = client; documents = new WorkspaceDocuments(client);
             view = new WorkspaceView(path =>
             {
                 // Open with this AD17 installation even if a newer Altium owns the file association.
                 Process.Start(new ProcessStartInfo(Process.GetCurrentProcess().MainModule.FileName, ProcessGitRunner.Quote(path)) { UseShellExecute = false });
-            });
+            }, documents);
             Text = "Altium 365 (AD17)";
             ClientSize = new System.Drawing.Size(500, 700);
             MinimumSize = new System.Drawing.Size(360, 350);
             Controls.Add(new ElementHost { Dock = DockStyle.Fill, Child = view });
+            notifications = new NotificationHandler(notification =>
+            {
+                if (notification.GetNotificationType() != NotificationType.DocumentNotification) return;
+                int code = notification.GetNotificationCode();
+                if (code == NotificationCode.DocumentNotificationCode.DocumentModifiedChanged || code == NotificationCode.DocumentNotificationCode.DocumentSaved ||
+                    code == NotificationCode.DocumentNotificationCode.DocumentOpening || code == NotificationCode.DocumentNotificationCode.DocumentClosed ||
+                    code == NotificationCode.DocumentNotificationCode.DocumentNameChanging || code == NotificationCode.DocumentNotificationCode.ProjectOptionsChange)
+                    view.NotifyDocumentChanged();
+            });
+            client.RegisterNotificationHandler(notifications);
         }
-        protected override void Dispose(bool disposing) { if (disposing) view?.Dispose(); base.Dispose(disposing); }
+        internal bool HasServerChanges => view.HasServerChanges;
+        internal bool IsBusy => view.IsBusy;
+        internal bool ServerSaveMatchesContext(IServerDocumentView context)
+        {
+            try { return documents.ContextMatches(view.WorkingFolder, context); } catch { return false; }
+        }
+        internal void RequestServerSave() => view.RequestServerSave();
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                view?.Dispose();
+                try { if (notifications != null) client.UnregisterNotificationHandler(notifications); } catch { }
+            }
+            base.Dispose(disposing);
+        }
     }
 }

@@ -186,7 +186,30 @@ namespace Altium17Cloud
     public sealed class GitStatus
     {
         public string Branch { get; set; }
+        public int OutgoingCommits { get; set; }
+        public int IncomingCommits { get; set; }
+        public bool HasPendingSave => Changes.Count > 0 || OutgoingCommits > 0;
         public List<GitChange> Changes { get; } = new List<GitChange>();
+    }
+    public sealed class ServerSaveException : InvalidOperationException
+    {
+        public ServerSaveException(string message) : base(message) { }
+    }
+    public static class WorkingCopyPath
+    {
+        public static bool Contains(string folder, string file)
+        {
+            if (string.IsNullOrWhiteSpace(folder) || string.IsNullOrWhiteSpace(file) || !Path.IsPathRooted(file)) return false;
+            try
+            {
+                string root = Path.GetFullPath(folder).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                var comparison = Environment.OSVersion.Platform == PlatformID.Win32NT ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+                return Path.GetFullPath(file).StartsWith(root, comparison);
+            }
+            catch (ArgumentException) { return false; }
+            catch (NotSupportedException) { return false; }
+            catch (PathTooLongException) { return false; }
+        }
     }
     public sealed class WorkspaceGit
     {
@@ -213,6 +236,8 @@ namespace Altium17Cloud
             command.Arguments.AddRange(args);
             command.Environment["GIT_TERMINAL_PROMPT"] = "0";
             command.Environment["GCM_INTERACTIVE"] = "Never";
+            // Background status reads must not rewrite the index or contend with an editor save.
+            command.Environment["GIT_OPTIONAL_LOCKS"] = "0";
             var config = new List<KeyValuePair<string, string>> {
                 new KeyValuePair<string,string>("credential.helper", ""),
                 new KeyValuePair<string,string>("core.askPass", ""),
@@ -277,6 +302,16 @@ namespace Altium17Cloud
             }
             var branch = await RunAsync(Command(folder, new[] { "symbolic-ref", "--quiet", "--short", "HEAD" }), cancellation).ConfigureAwait(false);
             var status = new GitStatus { Branch = branch.Output.Trim() };
+            var tracking = await RunAsync(Command(folder, new[] { "for-each-ref", "--format=%(objectname)", "refs/remotes/origin/master" }), cancellation).ConfigureAwait(false);
+            var counts = await RunAsync(Command(folder, tracking.Output.Trim().Length == 0 ?
+                new[] { "rev-list", "--count", "HEAD" } :
+                new[] { "rev-list", "--count", "--left-right", "HEAD...refs/remotes/origin/master" }), cancellation).ConfigureAwait(false);
+            var parts = counts.Output.Trim().Split(new[] { '\t', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length < 1 || parts.Length > 2 || !int.TryParse(parts[0], out int outgoing) || outgoing < 0 ||
+                (parts.Length == 2 && (!int.TryParse(parts[1], out int incoming) || incoming < 0)))
+                throw new GitOperationException("Git returned invalid pending-commit counts.");
+            status.OutgoingCommits = outgoing;
+            status.IncomingCommits = parts.Length == 2 ? int.Parse(parts[1]) : 0;
             var changes = await RunAsync(Command(folder, new[] { "status", "--porcelain=v1", "-z", "--untracked-files=all" }), cancellation).ConfigureAwait(false);
             string[] records = changes.Output.Split('\0');
             for (int i = 0; i < records.Length; i++)
@@ -323,6 +358,26 @@ namespace Altium17Cloud
             if (staging.Length != 0) await RunAsync(Command(Folder(folder), new[] { "add", "--all", "--" }.Concat(staging)), cancellation).ConfigureAwait(false);
             // --only preserves unrelated files already staged by another Git client.
             await RunAsync(Command(Folder(folder), new[] { "commit", "--only", "-m", message, "--" }.Concat(chosen)), cancellation).ConfigureAwait(false);
+        }
+        public async Task SaveToServerAsync(string remote, string folder, IEnumerable<string> selectedPaths, string message, string token, CancellationToken cancellation)
+        {
+            // Validate credentials before creating a local commit. Expired credentials are rejected by the server.
+            Command(Folder(folder), Array.Empty<string>(), remote, token);
+            var status = await MasterAsync(remote, folder, cancellation).ConfigureAwait(false);
+            var chosen = (selectedPaths ?? Array.Empty<string>()).Distinct(StringComparer.Ordinal).ToArray();
+            if (status.Changes.Any(c => c.Status.Contains("U") || c.Status == "AA" || c.Status == "DD"))
+                throw new GitOperationException("Resolve the working copy's merge conflicts with an external Git client before saving to the server.");
+            if (chosen.Length > 0) await CommitAsync(remote, folder, chosen, message, cancellation).ConfigureAwait(false);
+            else if (status.OutgoingCommits == 0) throw new ArgumentException("Select changed files to save to the server.");
+            try { await PushAsync(remote, folder, token, cancellation).ConfigureAwait(false); }
+            catch (OperationCanceledException)
+            {
+                throw new ServerSaveException("Upload cancelled or timed out. Your local commits are retained. Refresh status and retry Save to Server.");
+            }
+            catch (Exception error) when (error is GitOperationException || error is ArgumentException)
+            {
+                throw new ServerSaveException("Saved locally, but upload did not complete. Your local commits are retained; retry Save to Server. " + error.Message);
+            }
         }
     }
 }

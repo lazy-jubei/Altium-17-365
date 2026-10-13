@@ -136,6 +136,7 @@ internal static class Program
             sleep.Arguments[sleep.Arguments.Count - 1] = "--large-output";
             await Reject(() => new ProcessGitRunner(self).RunAsync(sleep, None), "bounds child-process output", "too much output");
             await Reject(() => new ProcessGitRunner(self).RunAsync(network, None), "older Git is rejected before receiving credentials", "2.31");
+            await ServerSaveChecks(root, bare);
             Console.WriteLine(passed + " Git checks passed.");
         }
         finally
@@ -144,12 +145,62 @@ internal static class Program
             Directory.Delete(root, true);
         }
     }
+    static async Task ServerSaveChecks(string root, string bare)
+    {
+        string folder = Path.Combine(root, "server save");
+        var runner = new LocalRemoteRunner(bare); var git = new WorkspaceGit(runner);
+        await git.CloneAsync(Remote, folder, Token, None); await Author(folder);
+        Require(!(await git.StatusAsync(Remote, folder, None)).HasPendingSave, "clean project has no Save to Server action");
+        Require(WorkingCopyPath.Contains(folder, Path.Combine(folder, "subfolder", "Board.SchDoc")) &&
+            !WorkingCopyPath.Contains(folder, Path.Combine(folder + " other", "Board.SchDoc")) &&
+            !WorkingCopyPath.Contains(folder, Path.Combine(folder, "..", "Other.SchDoc")) &&
+            !WorkingCopyPath.Contains(folder, "Board.SchDoc"), "editor saves are scoped to the working copy rather than similarly named folders");
+        File.WriteAllText(Path.Combine(folder, "Board.SchDoc"), "saved editor document");
+        File.WriteAllText(Path.Combine(folder, "other.txt"), "keep staged"); await Plain(folder, "add", "--", "other.txt");
+        Require((await git.StatusAsync(Remote, folder, None)).HasPendingSave, "changed files offer Save to Server");
+        string head = (await Plain(folder, "rev-parse", "HEAD")).Output;
+        await Reject(() => git.SaveToServerAsync(Remote, folder, new[] { "Board.SchDoc" }, "Save board", "", None), "missing credentials do not create a local commit", "access token");
+        Require((await Plain(folder, "rev-parse", "HEAD")).Output == head, "credential validation preserves local history");
+        runner.FailNextPush = true;
+        await Reject(() => git.SaveToServerAsync(Remote, folder, new[] { "Board.SchDoc" }, "Save board", Token, None), "failed server save clearly retains the local commit", "local commits are retained");
+        var status = await git.StatusAsync(Remote, folder, None);
+        Require(status.OutgoingCommits == 1 && status.HasPendingSave && !status.Changes.Any(c => c.Path == "Board.SchDoc"), "failed upload remains available as a pending Save to Server");
+        Require((await Plain(folder, "diff", "--cached", "--name-only")).Output.Trim() == "other.txt" &&
+            !(await Plain(folder, "ls-tree", "--name-only", "HEAD")).Output.Contains("other.txt"), "Save to Server excludes unchecked staged files");
+        head = (await Plain(folder, "rev-parse", "HEAD")).Output;
+        await git.SaveToServerAsync(Remote, folder, Array.Empty<string>(), "", Token, None);
+        Require((await Plain(folder, "rev-parse", "HEAD")).Output == head && (await Plain(root, "--git-dir=" + bare, "rev-parse", "master")).Output == head,
+            "retry uploads the existing commit without creating a duplicate commit");
+        Require((await git.StatusAsync(Remote, folder, None)).OutgoingCommits == 0, "successful upload clears the pending-commit indicator");
+        await git.SaveToServerAsync(Remote, folder, new[] { "other.txt" }, "Save remaining file", Token, None);
+        Require(!(await git.StatusAsync(Remote, folder, None)).HasPendingSave, "successful server save returns the project to an up-to-date state");
+        int before = runner.NetworkCalls;
+        await Reject(() => git.SaveToServerAsync(Remote, folder, Array.Empty<string>(), "", Token, None), "empty server save does not upload", "Select changed files");
+        Require(runner.NetworkCalls == before, "up-to-date project makes no server-save network request");
+        File.WriteAllText(Path.Combine(folder, "Board.SchDoc"), "remote-change race");
+        runner.SwitchRemoteAfterCommit = true; before = runner.NetworkCalls; head = (await Plain(folder, "rev-parse", "HEAD")).Output;
+        await Reject(() => git.SaveToServerAsync(Remote, folder, new[] { "Board.SchDoc" }, "Save edited board", Token, None), "remote changes after commit still report retained local work", "local commits are retained");
+        Require(runner.NetworkCalls == before && (await Plain(folder, "rev-parse", "HEAD")).Output != head,
+            "changed origin receives no credentials and the completed local commit survives");
+        await Plain(folder, "remote", "set-url", "origin", Remote);
+        await git.SaveToServerAsync(Remote, folder, Array.Empty<string>(), "", Token, None);
+        File.WriteAllText(Path.Combine(folder, "Board.SchDoc"), "base"); await git.CommitAsync(Remote, folder, new[] { "Board.SchDoc" }, "Conflict base", None);
+        await Plain(folder, "checkout", "-b", "conflicting-side");
+        File.WriteAllText(Path.Combine(folder, "Board.SchDoc"), "side"); await Plain(folder, "commit", "-am", "Side edit");
+        await Plain(folder, "checkout", "master"); File.WriteAllText(Path.Combine(folder, "Board.SchDoc"), "master"); await Plain(folder, "commit", "-am", "Master edit");
+        await Reject(() => Plain(folder, "merge", "conflicting-side"), "test creates a real unresolved merge");
+        before = runner.NetworkCalls;
+        await Reject(() => git.SaveToServerAsync(Remote, folder, new[] { "Board.SchDoc" }, "Unresolved", Token, None), "Save to Server rejects unresolved merge conflicts", "merge conflicts");
+        Require(runner.NetworkCalls == before && (await git.StatusAsync(Remote, folder, None)).Changes.Any(c => c.Status == "UU"), "conflict rejection neither stages markers nor uploads");
+    }
     sealed class LocalRemoteRunner : IGitRunner
     {
         readonly string bare;
         readonly ProcessGitRunner process = new ProcessGitRunner(Environment.GetEnvironmentVariable("ALTIUM17365_TEST_GIT"));
         internal readonly List<GitCommand> Commands = new List<GitCommand>();
         internal int NetworkCalls;
+        internal bool FailNextPush;
+        internal bool SwitchRemoteAfterCommit;
         internal LocalRemoteRunner(string bare) { this.bare = bare; }
         public async Task<GitResult> RunAsync(GitCommand original, CancellationToken cancellation)
         {
@@ -157,10 +208,16 @@ internal static class Program
             var mapped = new GitCommand { WorkingDirectory = original.WorkingDirectory };
             mapped.Arguments.AddRange(original.Arguments); foreach (var pair in original.Environment) mapped.Environment[pair.Key] = pair.Value;
             string verb = original.Arguments[2];
+            if (verb == "push" && FailNextPush) { FailNextPush = false; return new GitResult { ExitCode = 128, Error = "Authentication failed: private-server-body " + Token }; }
             if (verb == "clone") { NetworkCalls++; mapped.Arguments[mapped.Arguments.IndexOf(Remote)] = bare; }
             if (verb == "pull" || verb == "push") { NetworkCalls++; mapped.Arguments[mapped.Arguments.IndexOf("origin")] = bare; }
             var result = await process.RunAsync(mapped, cancellation);
+            if (verb == "commit" && result.ExitCode == 0 && SwitchRemoteAfterCommit)
+            { SwitchRemoteAfterCommit = false; await Plain(original.WorkingDirectory, "remote", "set-url", "origin", "https://other.365.altium.com/project.git"); }
             if (verb == "clone" && result.ExitCode == 0) await Plain(original.Arguments.Last(), "remote", "set-url", "origin", Remote);
+            // URL substitution bypasses Git's usual origin tracking-ref update; model the named remote after successful transport.
+            if ((verb == "push" || verb == "pull") && result.ExitCode == 0)
+                await Plain(original.WorkingDirectory, "update-ref", "refs/remotes/origin/master", (await Plain(original.WorkingDirectory, "rev-parse", "HEAD")).Output.Trim());
             return result;
         }
     }
