@@ -29,6 +29,17 @@ namespace Altium17Cloud
         private readonly TextBlock connection = Label("Disconnected"), status = Label("Connect to browse your workspace projects.");
         private readonly Button cancel = Button("Cancel"), connect = Button("Connect"), refresh = Button("Refresh"), more = Button("Load more"), disconnect = Button("Disconnect"), open = Button("Open workspace");
         private readonly TabControl tabs = new TabControl();
+        private readonly TextBox gitRemote = new TextBox(), gitFolder = new TextBox(), gitExecutable = new TextBox(), commitMessage = new TextBox();
+        private readonly PasswordBox gitToken = new PasswordBox();
+        private readonly TextBlock gitSummary = Label("Choose a project or enter its repository URL, then clone or select a working copy.");
+        private readonly Button useProject = Button("Use selected project"), clone = Button("Clone"), gitRefresh = Button("Refresh status"), pull = Button("Pull"), push = Button("Push"), commit = Button("Commit selected"), openProject = Button("Open project");
+        private readonly ObservableCollection<GitChange> changes = new ObservableCollection<GitChange>();
+        private readonly DataGrid changesGrid = new DataGrid();
+        private readonly Action<string> openProjectAction;
+        private DataGrid projectGrid;
+        private CloudProject gitProject;
+        private Workspace gitWorkspace;
+        private GitStatus workingStatus;
         private readonly List<Control> busyControls = new List<Control>();
         private readonly string settingsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Altium17365", "settings.json");
         private CancellationTokenSource operation;
@@ -37,8 +48,9 @@ namespace Altium17Cloud
         private static HttpClient CreateHttp(TimeSpan timeout) => new HttpClient(new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false, SslProtocols = SslProtocols.Tls12 }) { Timeout = timeout };
         private static TextBlock Label(string text) => new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 6) };
         private static Button Button(string text) => new Button { Content = text, Padding = new Thickness(10, 5, 10, 5), Margin = new Thickness(0, 4, 6, 4) };
-        internal WorkspaceView()
+        internal WorkspaceView(Action<string> openProjectAction = null)
         {
+            this.openProjectAction = openProjectAction;
             session = new WorkspaceSession(new WorkspaceApi(apiHttp), authHttp);
             FontFamily = new FontFamily("Segoe UI"); FontSize = 13; Background = Brushes.White; Foreground = Brushes.Black;
             var layout = new DockPanel { Margin = new Thickness(10) };
@@ -51,6 +63,7 @@ namespace Altium17Cloud
             cancel.Click += (_, __) => operation?.Cancel();
             tabs.Items.Add(new TabItem { Header = "Connection", Content = BuildConnection() });
             tabs.Items.Add(new TabItem { Header = "Projects", Content = BuildProjects() });
+            tabs.Items.Add(new TabItem { Header = "Git", Content = BuildGit() });
             LoadSettings(); UpdateState();
         }
         private UIElement BuildConnection()
@@ -99,9 +112,12 @@ namespace Altium17Cloud
         {
             var layout = new DockPanel { Margin = new Thickness(10) };
             var buttons = new WrapPanel();
-            foreach (var button in new[] { refresh, more, open, disconnect }) buttons.Children.Add(button);
+            foreach (var button in new[] { refresh, more, useProject, open, disconnect }) buttons.Children.Add(button);
             DockPanel.SetDock(buttons, Dock.Top); layout.Children.Add(buttons);
             var grid = new DataGrid { ItemsSource = projects, AutoGenerateColumns = false, IsReadOnly = true, CanUserAddRows = false, CanUserDeleteRows = false, HeadersVisibility = DataGridHeadersVisibility.Column, SelectionMode = DataGridSelectionMode.Single };
+            projectGrid = grid;
+            grid.SelectionChanged += (_, __) => UpdateState();
+            busyControls.Add(grid);
             grid.Columns.Add(new DataGridTextColumn { Header = "Project", Binding = new System.Windows.Data.Binding("Name"), Width = new DataGridLength(1, DataGridLengthUnitType.Star) });
             grid.Columns.Add(new DataGridTextColumn { Header = "Description", Binding = new System.Windows.Data.Binding("Description"), Width = new DataGridLength(1, DataGridLengthUnitType.Star) });
             grid.Columns.Add(new DataGridTextColumn { Header = "VCS", Binding = new System.Windows.Data.Binding("VersionControl"), Width = DataGridLength.Auto });
@@ -109,8 +125,118 @@ namespace Altium17Cloud
             refresh.Click += async (_, __) => await RunAsync(async ct => ShowPage(await session.ProjectsAsync(null, ct), false), "Refreshing projects…");
             more.Click += async (_, __) => await RunAsync(async ct => ShowPage(await session.ProjectsAsync(cursor, ct), true), "Loading more projects…");
             open.Click += (_, __) => { if (session.Connected != null) TryOpen(session.Connected.Url.AbsoluteUri); };
-            disconnect.Click += (_, __) => { session.Disconnect(); accessToken.Clear(); projects.Clear(); hasNext = false; cursor = null; status.Text = "Disconnected."; UpdateState(); };
+            disconnect.Click += (_, __) => Disconnect();
+            useProject.Click += (_, __) =>
+            {
+                if (!(grid.SelectedItem is CloudProject project) || string.IsNullOrEmpty(project.RepositoryUrl)) return;
+                gitRemote.Text = project.RepositoryUrl; gitProject = project; gitWorkspace = session.Connected; gitToken.Clear();
+                tabs.SelectedIndex = 2; status.Text = "Project selected. Choose its local working-copy folder, or a new folder to clone into.";
+                UpdateState();
+            };
             return layout;
+        }
+        private UIElement BuildGit()
+        {
+            var layout = new DockPanel { Margin = new Thickness(10) };
+            var settings = new StackPanel();
+            var configuration = new StackPanel();
+            configuration.Children.Add(Label("Use a project from the Projects tab, or enter its Git URL and Workspace token directly. Direct Git does not query the workspace API."));
+            configuration.Children.Add(Label("Altium 365 repository URL")); configuration.Children.Add(gitRemote);
+            configuration.Children.Add(Label("Workspace access token (direct Git only; kept in memory)")); configuration.Children.Add(gitToken);
+            var clearToken = Button("Disconnect / clear token"); configuration.Children.Add(clearToken);
+            clearToken.Click += (_, __) => Disconnect();
+            configuration.Children.Add(Label("Local working-copy folder")); configuration.Children.Add(gitFolder);
+            var chooseFolder = Button("Choose folder…"); configuration.Children.Add(chooseFolder);
+            chooseFolder.Click += (_, __) =>
+            {
+                using (var dialog = new System.Windows.Forms.FolderBrowserDialog { Description = "Choose an existing working copy or an empty folder to clone into.", ShowNewFolderButton = true })
+                    if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK) gitFolder.Text = dialog.SelectedPath;
+            };
+            var advanced = new StackPanel();
+            advanced.Children.Add(Label("Git executable (optional; use Git for Windows under Wine)")); advanced.Children.Add(gitExecutable);
+            var chooseGit = Button("Choose git.exe…"); advanced.Children.Add(chooseGit);
+            chooseGit.Click += (_, __) =>
+            {
+                using (var dialog = new System.Windows.Forms.OpenFileDialog { Filter = "Git executable|git.exe", CheckFileExists = true })
+                    if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK) gitExecutable.Text = dialog.FileName;
+            };
+            configuration.Children.Add(new Expander { Header = "Git installation", Content = advanced });
+            settings.Children.Add(new Expander { Header = "Repository and credentials", IsExpanded = true, Content = new ScrollViewer { Content = configuration, MaxHeight = 280, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled } });
+            var buttons = new WrapPanel();
+            foreach (var button in new[] { clone, gitRefresh, pull, push, openProject }) buttons.Children.Add(button);
+            settings.Children.Add(buttons); settings.Children.Add(gitSummary);
+            DockPanel.SetDock(settings, Dock.Top); layout.Children.Add(settings);
+            var commitArea = new StackPanel();
+            commitArea.Children.Add(Label("Commit message (uses your configured Git author name and email)")); commitArea.Children.Add(commitMessage); commitArea.Children.Add(commit);
+            DockPanel.SetDock(commitArea, Dock.Bottom); layout.Children.Add(commitArea);
+            changesGrid.ItemsSource = changes; changesGrid.AutoGenerateColumns = false;
+            changesGrid.CanUserAddRows = changesGrid.CanUserDeleteRows = false;
+            changesGrid.HeadersVisibility = DataGridHeadersVisibility.Column;
+            changesGrid.Columns.Add(new DataGridCheckBoxColumn { Header = "Commit", Binding = new System.Windows.Data.Binding("Selected") });
+            changesGrid.Columns.Add(new DataGridTextColumn { Header = "Status", IsReadOnly = true, Binding = new System.Windows.Data.Binding("Status"), Width = DataGridLength.Auto });
+            changesGrid.Columns.Add(new DataGridTextColumn { Header = "File", IsReadOnly = true, Binding = new System.Windows.Data.Binding("Path"), Width = new DataGridLength(1, DataGridLengthUnitType.Star) });
+            layout.Children.Add(changesGrid);
+            gitRemote.TextChanged += (_, __) => { gitProject = null; gitWorkspace = null; ClearWorkingStatus(); };
+            gitFolder.TextChanged += (_, __) => ClearWorkingStatus();
+            clone.Click += async (_, __) => await RunAsync(async ct =>
+            {
+                var git = Git();
+                await git.CloneAsync(gitRemote.Text, gitFolder.Text, await GitTokenAsync(ct), ct);
+                await RefreshGitAsync(ct); SaveSettings(); status.Text = "Project cloned. Open it to begin editing.";
+            }, "Cloning project…");
+            gitRefresh.Click += async (_, __) => await RunAsync(async ct => { await RefreshGitAsync(ct); SaveSettings(); }, "Reading working-copy status…");
+            pull.Click += async (_, __) => await RunAsync(async ct =>
+            {
+                if (MessageBox.Show("Save and close this working copy's project documents in Altium before pulling. Continue after closing them?", "Pull from Altium 365", MessageBoxButton.OKCancel, MessageBoxImage.Information, MessageBoxResult.Cancel) != MessageBoxResult.OK)
+                { status.Text = "Pull cancelled."; return; }
+                await Git().PullAsync(gitRemote.Text, gitFolder.Text, await GitTokenAsync(ct), ct);
+                await RefreshGitAsync(ct); status.Text = "Working copy updated. Reopen any project documents already open in Altium to read the updated files.";
+            }, "Pulling project…");
+            push.Click += async (_, __) => await RunAsync(async ct =>
+            {
+                await Git().PushAsync(gitRemote.Text, gitFolder.Text, await GitTokenAsync(ct), ct);
+                await RefreshGitAsync(ct); status.Text = "Commits pushed to the Workspace's master branch.";
+            }, "Pushing project…");
+            commit.Click += async (_, __) => await RunAsync(async ct =>
+            {
+                changesGrid.CommitEdit(DataGridEditingUnit.Cell, true); changesGrid.CommitEdit(DataGridEditingUnit.Row, true);
+                var selected = changes.Where(c => c.Selected).Select(c => c.Path).ToArray();
+                await Git().CommitAsync(gitRemote.Text, gitFolder.Text, selected, commitMessage.Text, ct);
+                await RefreshGitAsync(ct); commitMessage.Clear(); status.Text = "Selected files committed locally. Push to send the commits to Altium 365.";
+            }, "Committing selected files…");
+            openProject.Click += (_, __) =>
+            {
+                try
+                {
+                    using (var dialog = new System.Windows.Forms.OpenFileDialog { InitialDirectory = gitFolder.Text, Filter = "Altium PCB project|*.PrjPcb", CheckFileExists = true })
+                        if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK) openProjectAction(dialog.FileName);
+                }
+                catch { status.Text = "Unable to open the project. Open its PrjPcb file from Altium's File menu."; }
+            };
+            busyControls.AddRange(new Control[] { gitRemote, gitFolder, gitToken, gitExecutable, commitMessage, chooseFolder, chooseGit, clearToken, changesGrid });
+            return layout;
+        }
+        private WorkspaceGit Git() => new WorkspaceGit(new ProcessGitRunner(gitExecutable.Text));
+        private void Disconnect()
+        {
+            session.Disconnect(); accessToken.Clear(); gitToken.Clear(); gitProject = null; gitWorkspace = null;
+            projects.Clear(); hasNext = false; cursor = null; status.Text = "Disconnected. Git credentials cleared."; UpdateState();
+        }
+        private async Task<string> GitTokenAsync(CancellationToken cancellation)
+        {
+            if (gitProject != null && ReferenceEquals(session.Connected, gitWorkspace) && gitWorkspace != null && gitRemote.Text == gitProject.RepositoryUrl)
+                return await session.AccessTokenAsync(cancellation);
+            return gitToken.Password;
+        }
+        private void ClearWorkingStatus()
+        {
+            workingStatus = null; changes.Clear(); gitSummary.Text = "Clone the project or refresh the selected working copy."; UpdateState();
+        }
+        private async Task RefreshGitAsync(CancellationToken cancellation)
+        {
+            workingStatus = await Git().StatusAsync(gitRemote.Text, gitFolder.Text, cancellation);
+            changes.Clear(); foreach (var change in workingStatus.Changes) changes.Add(change);
+            gitSummary.Text = "Branch: " + workingStatus.Branch + " · " + changes.Count + " changed files. Save documents in Altium before committing.";
         }
         private void ShowPage(ProjectPage page, bool append)
         {
@@ -126,7 +252,7 @@ namespace Altium17Cloud
             var pending = new CancellationTokenSource(TimeSpan.FromMinutes(5));
             operation = pending; status.Text = message; UpdateState();
             try { await action(pending.Token); }
-            catch (OperationCanceledException) { if (!disposed) status.Text = "Connection request cancelled or timed out."; }
+            catch (OperationCanceledException) { if (!disposed) status.Text = "Operation cancelled or timed out. Refresh Git status before retrying a Git operation."; }
             catch (Exception error)
             {
                 if (!disposed) status.Text = FriendlyError(error);
@@ -137,6 +263,7 @@ namespace Altium17Cloud
         {
             if (error is WorkspaceAuthenticationException) return "Altium sign-in failed. Check your registered client ID and complete browser sign-in.";
             if (error is HttpRequestException) return "Cannot reach Altium 365. Check your connection and workspace address.";
+            if (error is IOException || error is UnauthorizedAccessException) return "Cannot read or write the working copy. Check folder permissions and close any documents using those files.";
             // API errors above contain only fixed messages; authentication response bodies never enter the UI or logs.
             if (error is ArgumentException || error is InvalidOperationException) return error.Message;
             return "The connection could not be completed. Disconnect and try again.";
@@ -149,6 +276,11 @@ namespace Altium17Cloud
             connect.IsEnabled = !busy && session.SignedIn && workspaces.SelectedItem is Workspace;
             refresh.IsEnabled = open.IsEnabled = disconnect.IsEnabled = !busy && session.Connected != null;
             more.IsEnabled = !busy && session.Connected != null && hasNext;
+            useProject.IsEnabled = !busy && session.Connected != null && projectGrid?.SelectedItem is CloudProject project && !string.IsNullOrEmpty(project.RepositoryUrl);
+            clone.IsEnabled = gitRefresh.IsEnabled = !busy;
+            pull.IsEnabled = push.IsEnabled = !busy && workingStatus?.Branch == "master";
+            commit.IsEnabled = !busy && workingStatus?.Branch == "master" && changes.Count > 0;
+            openProject.IsEnabled = !busy && workingStatus != null && openProjectAction != null;
             connection.Text = session.Connected == null ? "Disconnected" : "Connected · " + session.Connected.Name;
             connection.Foreground = session.Connected == null ? Brushes.DimGray : Brushes.DarkGreen;
         }
@@ -159,8 +291,11 @@ namespace Altium17Cloud
             try
             {
                 var saved = JsonConvert.DeserializeObject<Dictionary<string, string>>(File.ReadAllText(settingsPath));
-                if (saved.TryGetValue("workspaceUrl", out var url)) workspaceUrl.Text = WorkspaceApi.WorkspaceUrl(url).AbsoluteUri;
+                if (saved.TryGetValue("workspaceUrl", out var url) && !string.IsNullOrWhiteSpace(url)) workspaceUrl.Text = WorkspaceApi.WorkspaceUrl(url).AbsoluteUri;
                 if (saved.TryGetValue("clientId", out var id)) clientId.Text = id;
+                if (saved.TryGetValue("gitRemote", out var remote) && !string.IsNullOrWhiteSpace(remote)) gitRemote.Text = WorkspaceGit.ValidateRemote(remote);
+                if (saved.TryGetValue("gitFolder", out var folder)) gitFolder.Text = folder;
+                if (saved.TryGetValue("gitExecutable", out var executable)) gitExecutable.Text = executable;
             }
             catch { }
         }
@@ -169,14 +304,14 @@ namespace Altium17Cloud
             try
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(settingsPath));
-                File.WriteAllText(settingsPath, JsonConvert.SerializeObject(new Dictionary<string, string> { ["workspaceUrl"] = workspaceUrl.Text, ["clientId"] = clientId.Text }));
+                File.WriteAllText(settingsPath, JsonConvert.SerializeObject(new Dictionary<string, string> { ["workspaceUrl"] = workspaceUrl.Text, ["clientId"] = clientId.Text, ["gitRemote"] = gitRemote.Text, ["gitFolder"] = gitFolder.Text, ["gitExecutable"] = gitExecutable.Text }));
             }
             catch { /* Preferences are optional; credentials are never persisted. */ }
         }
         public void Dispose()
         {
             if (disposed) return;
-            disposed = true; operation?.Cancel(); accessToken.Clear(); session.Disconnect();
+            disposed = true; operation?.Cancel(); accessToken.Clear(); gitToken.Clear(); session.Disconnect();
             apiHttp.Dispose(); authHttp.Dispose();
         }
     }

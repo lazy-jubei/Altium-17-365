@@ -1,5 +1,6 @@
 using DXP;
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -73,9 +74,14 @@ namespace Altium17Cloud
     }
     internal sealed class WorkspacePanel : ServerPanelForm
     {
-        private readonly WorkspaceView view = new WorkspaceView();
+        private readonly WorkspaceView view;
         internal WorkspacePanel()
         {
+            view = new WorkspaceView(path =>
+            {
+                // Open with this AD17 installation even if a newer Altium owns the file association.
+                Process.Start(new ProcessStartInfo(Process.GetCurrentProcess().MainModule.FileName, ProcessGitRunner.Quote(path)) { UseShellExecute = false });
+            });
             Text = "Altium 365 (AD17)";
             ClientSize = new System.Drawing.Size(500, 700);
             MinimumSize = new System.Drawing.Size(360, 350);

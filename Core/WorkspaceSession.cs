@@ -64,13 +64,19 @@ namespace Altium17Cloud
         }
         public async Task<ProjectPage> ProjectsAsync(string cursor, CancellationToken cancellation)
         {
+            var token = await AccessTokenAsync(cancellation).ConfigureAwait(false);
+            return await api.ProjectsAsync(Connected.Url, token, cursor, cancellation).ConfigureAwait(false);
+        }
+        public async Task<string> AccessTokenAsync(CancellationToken cancellation)
+        {
+            cancellation.ThrowIfCancellationRequested();
             if (Connected == null || workspaceToken == null) throw new InvalidOperationException("Connect to a workspace first.");
             if (workspaceToken.ExpiresAt.HasValue && workspaceToken.ExpiresAt <= DateTimeOffset.UtcNow.ToUnixTimeSeconds())
             {
                 if (workspaceAuth == null || string.IsNullOrWhiteSpace(workspaceToken.RefreshToken)) throw new InvalidOperationException("Workspace sign-in expired. Connect again.");
                 workspaceToken = await Refresh(workspaceAuth, workspaceToken, cancellation).ConfigureAwait(false);
             }
-            return await api.ProjectsAsync(Connected.Url, workspaceToken.AccessToken, cursor, cancellation).ConfigureAwait(false);
+            return workspaceToken.AccessToken;
         }
         private static async Task<TokenSet> Authenticate(Func<Task<TokenSet>> action)
         {
