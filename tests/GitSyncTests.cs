@@ -22,6 +22,15 @@ internal static partial class Program
         Require(schedule.TryStart("batch b", now), "projects share the batch's scan timestamp");
         schedule.Complete("a"); schedule.Complete("batch b");
         Require(schedule.TryStart("a", now.AddMinutes(2)) && schedule.TryStart("batch b", now.AddMinutes(2)), "the next two-minute batch is due for every project without a cooldown gap");
+#if NETFRAMEWORK
+        // Reproduce headless Framework's UTF-8 console preamble without changing an OS console.
+        var inputEncoding = typeof(Console).GetField("_inputEncoding", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+        var previousEncoding = Console.InputEncoding;
+        inputEncoding.SetValue(null, new System.Text.UTF8Encoding(true));
+        try
+        {
+            Require(Console.InputEncoding.GetPreamble().Length == 3, "sync runs with Framework's UTF-8 console preamble enabled");
+#endif
         string bare = Path.Combine(root, "sync.git"), seed = Path.Combine(root, "sync seed"), a = Path.Combine(root, "sync local"), b = Path.Combine(root, "sync server");
         Directory.CreateDirectory(seed); await Plain(seed, "init", "--initial-branch=master"); await Author(seed);
         File.WriteAllBytes(Path.Combine(seed, "Board.PcbDoc"), new byte[] { 0, 1, 2, 3 });
@@ -84,15 +93,20 @@ internal static partial class Program
             (await Plain(a, "log", "-1", "--format=%B")).Output.Trim().Length == 0, "reconciliation retains both histories in one blank-message merge commit");
         await git.PushAsync(Remote, a, Token, None);
         Require((await git.FetchAsync(Remote, a, Token, None)).IncomingCommits == 0, "reviewed reconciliation pushes with an ordinary non-forced upload");
+#if NETFRAMEWORK
+        }
+        finally { inputEncoding.SetValue(null, previousEncoding); }
+#endif
     }
     static async Task SyncEdgeChecks(string root)
     {
         string seed = Path.Combine(root, "edges seed"), bare = Path.Combine(root, "edges.git"), a = Path.Combine(root, "edges local"), b = Path.Combine(root, "edges server");
         Directory.CreateDirectory(seed); await Plain(seed, "init", "--initial-branch=master"); await Author(seed);
         foreach (string file in new[] { "Shape", "Remove.PcbDoc", "Staged.SchDoc", "Unicode_µF.SchDoc" }) File.WriteAllText(Path.Combine(seed, file), "base");
+        for (int i = 0; i < 220; i++) File.WriteAllText(Path.Combine(seed, "Batch-" + i.ToString("D3") + new string('x', 48) + ".SchDoc"), "batch file " + i);
         File.WriteAllText(Path.Combine(seed, ".gitignore"), "*.cache\n");
         await Plain(seed, "add", "."); await Plain(seed, "commit", "-m", "seed"); await Plain(root, "clone", "--bare", seed, bare);
-        var git = new WorkspaceGit(new LocalRemoteRunner(bare));
+        var runner = new LocalRemoteRunner(bare); var git = new WorkspaceGit(runner);
         await git.CloneAsync(Remote, a, Token, None); await Author(a); await git.CloneAsync(Remote, b, Token, None); await Author(b);
         File.Delete(Path.Combine(b, "Shape")); Directory.CreateDirectory(Path.Combine(b, "Shape"));
         File.WriteAllText(Path.Combine(b, "Shape/New.PcbDoc"), "new server folder"); File.Delete(Path.Combine(b, "Remove.PcbDoc"));
@@ -120,7 +134,10 @@ internal static partial class Program
         Require(File.ReadAllText(Path.Combine(a, "Remove.PcbDoc")) == "local retained deletion" && File.ReadAllText(Path.Combine(a, "Cache.cache")) == "local ignored",
             "Local preserves an edited deleted file and an ignored file that the server would overwrite");
         Require(File.ReadAllText(Path.Combine(a, "Shape/New.PcbDoc")) == "new server folder" && File.ReadAllText(Path.Combine(a, "Unicode_µF.SchDoc")) == "server unicode",
-            "Server resolves a file/directory collision and preserves Unicode filenames through Git stdin");
+            "Server resolves a file/directory collision and preserves Unicode filenames");
+        Require(runner.Commands.Where(c => c.Arguments.Contains("--cacheinfo")).All(c => c.Arguments.Sum(x => ProcessGitRunner.Quote(x).Length + 1) < 17000) &&
+            Enumerable.Range(0, 220).All(i => File.ReadAllText(Path.Combine(a, "Batch-" + i.ToString("D3") + new string('x', 48) + ".SchDoc")) == "batch file " + i),
+            "large pull trees use bounded argument batches and preserve every file");
         Require((await Plain(a, "show", ":Staged.SchDoc")).Output == "local staged" && File.ReadAllText(Path.Combine(a, "Staged.SchDoc")) == "local unstaged after staging",
             "Local preserves distinct staged and working versions of a conflicting document");
     }

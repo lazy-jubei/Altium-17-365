@@ -34,10 +34,26 @@ namespace Altium17Cloud
     {
         private async Task<string> OutputAsync(string folder, CancellationToken ct, params string[] args) =>
             (await RunAsync(Command(folder, args), ct).ConfigureAwait(false)).Output.TrimEnd('\r', '\n');
-        private async Task<string> IndexAsync(string folder, string index, CancellationToken ct, string input, params string[] args)
+        private async Task<string> IndexAsync(string folder, string index, CancellationToken ct, params string[] args)
         {
-            var command = Command(folder, args); command.Environment["GIT_INDEX_FILE"] = index; command.Input = input;
+            var command = Command(folder, args); command.Environment["GIT_INDEX_FILE"] = index;
             return (await RunAsync(command, ct).ConfigureAwait(false)).Output.TrimEnd('\r', '\n');
+        }
+        private async Task IndexBatchAsync(string folder, string index, CancellationToken ct, string[] prefix, IEnumerable<string[]> entries)
+        {
+            var args = new List<string>(prefix); int length = 0;
+            foreach (var entry in entries)
+            {
+                int size = entry.Sum(a => ProcessGitRunner.Quote(a).Length + 1);
+                if (size > 16000) throw new GitOperationException("A project filename exceeds Git's command-line limit.");
+                if (length + size > 16000)
+                {
+                    await IndexAsync(folder, index, ct, args.ToArray()).ConfigureAwait(false);
+                    args = new List<string>(prefix); length = 0;
+                }
+                args.AddRange(entry); length += size;
+            }
+            if (length > 0) await IndexAsync(folder, index, ct, args.ToArray()).ConfigureAwait(false);
         }
         public async Task<GitStatus> FetchAsync(string remote, string folder, string token, CancellationToken ct)
         {
@@ -80,26 +96,26 @@ namespace Altium17Cloud
         private async Task<string> TreeAsync(GitPullPlan plan, Dictionary<string, GitTreeEntry> files, CancellationToken ct)
         {
             string index = Path.Combine(plan.Temp, Guid.NewGuid().ToString("N") + ".index");
-            await IndexAsync(plan.Folder, index, ct, null, "read-tree", "--empty").ConfigureAwait(false);
-            string input = string.Concat(files.OrderBy(p => p.Key, StringComparer.Ordinal).Select(p => p.Value.Mode + " " + p.Value.Oid + "\t" + p.Key + "\0"));
-            await IndexAsync(plan.Folder, index, ct, input, "update-index", "-z", "--index-info").ConfigureAwait(false);
-            return await IndexAsync(plan.Folder, index, ct, null, "write-tree").ConfigureAwait(false);
+            await IndexAsync(plan.Folder, index, ct, "read-tree", "--empty").ConfigureAwait(false);
+            // Framework 4.8 can prefix redirected stdin with a BOM; pass bounded Unicode arguments instead.
+            await IndexBatchAsync(plan.Folder, index, ct, new[] { "update-index", "--add" },
+                files.OrderBy(p => p.Key, StringComparer.Ordinal).Select(p => new[] { "--cacheinfo", p.Value.Mode, p.Value.Oid, p.Key })).ConfigureAwait(false);
+            return await IndexAsync(plan.Folder, index, ct, "write-tree").ConfigureAwait(false);
         }
         private async Task SnapshotAsync(GitPullPlan plan, CancellationToken ct)
         {
             string index = Path.Combine(plan.Temp, Guid.NewGuid().ToString("N") + ".index"), actual = Path.Combine(plan.GitDir, "index");
             if (File.Exists(actual)) File.Copy(actual, index);
-            else await IndexAsync(plan.Folder, index, ct, null, "read-tree", "--empty").ConfigureAwait(false);
-            plan.IndexTree = await IndexAsync(plan.Folder, index, ct, null, "write-tree").ConfigureAwait(false);
-            await IndexAsync(plan.Folder, index, ct, null, "add", "--all", "--", ".").ConfigureAwait(false);
+            else await IndexAsync(plan.Folder, index, ct, "read-tree", "--empty").ConfigureAwait(false);
+            plan.IndexTree = await IndexAsync(plan.Folder, index, ct, "write-tree").ConfigureAwait(false);
+            await IndexAsync(plan.Folder, index, ct, "add", "--all", "--", ".").ConfigureAwait(false);
             if (plan.ServerFiles != null)
             {
-                var ignored = (await IndexAsync(plan.Folder, index, ct, null, "ls-files", "--others", "--ignored", "--exclude-standard", "-z").ConfigureAwait(false))
+                var ignored = (await IndexAsync(plan.Folder, index, ct, "ls-files", "--others", "--ignored", "--exclude-standard", "-z").ConfigureAwait(false))
                     .Split('\0').Where(p => p.Length > 0 && plan.ServerFiles.Keys.Any(s => Under(p, s) || Under(s, p))).ToArray();
-                if (ignored.Length > 0) await IndexAsync(plan.Folder, index, ct, string.Concat(ignored.Select(p => p + "\0")),
-                    "add", "--force", "--pathspec-from-file=-", "--pathspec-file-nul").ConfigureAwait(false);
+                await IndexBatchAsync(plan.Folder, index, ct, new[] { "add", "--force", "--" }, ignored.Select(p => new[] { p })).ConfigureAwait(false);
             }
-            plan.WorkTree = await IndexAsync(plan.Folder, index, ct, null, "write-tree").ConfigureAwait(false);
+            plan.WorkTree = await IndexAsync(plan.Folder, index, ct, "write-tree").ConfigureAwait(false);
         }
         private static GitTreeEntry Entry(Dictionary<string, GitTreeEntry> files, string path) => files.TryGetValue(path, out var value) ? value : null;
         private static bool Same(GitTreeEntry a, GitTreeEntry b) => a == null ? b == null : a.Same(b);
@@ -224,11 +240,11 @@ namespace Altium17Cloud
                     await OutputAsync(plan.Folder, ct, "update-ref", recovery + "/index", plan.IndexTree).ConfigureAwait(false);
                     if (plan.Head != null) await OutputAsync(plan.Folder, ct, "update-ref", recovery + "/head", plan.Head).ConfigureAwait(false);
                     string tempIndex = Path.Combine(plan.Temp, "apply.index");
-                    await IndexAsync(plan.Folder, tempIndex, ct, null, "read-tree", plan.WorkTree).ConfigureAwait(false);
-                    await IndexAsync(plan.Folder, tempIndex, ct, null, "update-index", "--refresh").ConfigureAwait(false);
+                    await IndexAsync(plan.Folder, tempIndex, ct, "read-tree", plan.WorkTree).ConfigureAwait(false);
+                    await IndexAsync(plan.Folder, tempIndex, ct, "update-index", "--refresh").ConfigureAwait(false);
                     changed = retainLock = true;
-                    await IndexAsync(plan.Folder, tempIndex, ct, null, "read-tree", "-m", "-u", plan.WorkTree, workTree).ConfigureAwait(false);
-                    await IndexAsync(plan.Folder, tempIndex, ct, null, "read-tree", indexTree).ConfigureAwait(false);
+                    await IndexAsync(plan.Folder, tempIndex, ct, "read-tree", "-m", "-u", plan.WorkTree, workTree).ConfigureAwait(false);
+                    await IndexAsync(plan.Folder, tempIndex, ct, "read-tree", indexTree).ConfigureAwait(false);
                     if (nextHead != null && nextHead != plan.Head)
                         await OutputAsync(plan.Folder, ct, "update-ref", "-m", "Altium 365 pull", "refs/heads/master", nextHead, plan.Head ?? new string('0', nextHead.Length)).ConfigureAwait(false);
                     indexLock.Position = 0; indexLock.SetLength(0);

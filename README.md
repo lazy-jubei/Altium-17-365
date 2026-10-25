@@ -11,7 +11,7 @@ A dockable Altium 365 panel for Altium Designer 17.
 
 ## Install
 
-Download [v0.4.0 setup](https://github.com/lazy-jubei/Altium-17-365/releases/download/v0.4.0/Altium-17-365-Setup.exe). Close AD17, run the installer and restart. Requires .NET Framework 4.8 and [Git for Windows](https://gitforwindows.org/); Wine needs Windows `git.exe`.
+Download [v0.4.1 setup](https://github.com/lazy-jubei/Altium-17-365/releases/download/v0.4.1/Altium-17-365-Setup.exe). Close AD17, run the installer and restart. Requires .NET Framework 4.8 and [Git for Windows](https://gitforwindows.org/); Wine needs Windows `git.exe`.
 
 ## Connect
 

@@ -277,14 +277,14 @@ internal static partial class Program
         public async Task<GitResult> RunAsync(GitCommand original, CancellationToken cancellation)
         {
             Commands.Add(original);
-            var mapped = new GitCommand { WorkingDirectory = original.WorkingDirectory, Input = original.Input };
+            var mapped = new GitCommand { WorkingDirectory = original.WorkingDirectory };
             mapped.Arguments.AddRange(original.Arguments); foreach (var pair in original.Environment) mapped.Environment[pair.Key] = pair.Value;
             string verb = original.Arguments[2];
             if (verb == "push" && FailNextPush) { FailNextPush = false; return new GitResult { ExitCode = 128, Error = "Authentication failed: private-server-body " + Token }; }
             if (verb == "clone" || verb == "ls-remote") { NetworkCalls++; mapped.Arguments[mapped.Arguments.IndexOf(Remote)] = bare; }
             if (verb == "pull" || verb == "push" || verb == "fetch") { NetworkCalls++; mapped.Arguments[mapped.Arguments.IndexOf("origin")] = bare; }
             var result = await process.RunAsync(mapped, cancellation);
-            if (result.ExitCode != 0 && verb == "read-tree") Console.WriteLine("TEST read-tree: " + result.Error);
+            if (result.ExitCode != 0) Console.WriteLine("TEST Git " + verb + ": " + result.Error);
             if (verb == "commit" && result.ExitCode == 0 && SwitchRemoteAfterCommit)
             { SwitchRemoteAfterCommit = false; await Plain(original.WorkingDirectory, "remote", "set-url", "origin", "https://other.365.altium.com/project.git"); }
             if (verb == "clone" && result.ExitCode == 0) await Plain(original.Arguments.Last(), "remote", "set-url", "origin", Remote);

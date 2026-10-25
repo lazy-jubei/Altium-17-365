@@ -15,7 +15,6 @@ namespace Altium17Cloud
     public sealed class GitCommand
     {
         public string WorkingDirectory { get; set; }
-        public string Input { get; set; }
         public List<string> Arguments { get; } = new List<string>();
         public Dictionary<string, string> Environment { get; } = new Dictionary<string, string>();
     }
@@ -113,13 +112,7 @@ namespace Altium17Cloud
                         {
                             var output = ReadAsync(process.StandardOutput, stop);
                             var error = ReadAsync(process.StandardError, stop);
-                            var input = process.StandardInput.BaseStream;
-                            if (command.Input != null)
-                            {
-                                byte[] bytes = Encoding.UTF8.GetBytes(command.Input);
-                                await input.WriteAsync(bytes, 0, bytes.Length).ConfigureAwait(false);
-                            }
-                            input.Close();
+                            process.StandardInput.Close();
                             await Task.Run(() => process.WaitForExit()).ConfigureAwait(false);
                             string[] streams = await Task.WhenAll(output, error).ConfigureAwait(false);
                             cancellation.ThrowIfCancellationRequested();
