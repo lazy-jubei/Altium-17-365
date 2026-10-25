@@ -27,7 +27,7 @@ namespace Altium17Cloud
         private readonly ObservableCollection<CloudProject> projects = new ObservableCollection<CloudProject>();
         private readonly ICollectionView projectView;
         private readonly TextBox projectSearch = new TextBox { ToolTip = "Search project names and descriptions" };
-        private readonly TextBlock projectCount = Label("0 projects");
+        private readonly TextBlock projectCount = Label("0 projects found");
         private readonly DispatcherTimer searchTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(150) };
         private string[] projectTerms = Array.Empty<string>();
         private readonly TextBox workspaceUrl = new TextBox();
@@ -240,7 +240,6 @@ namespace Altium17Cloud
             busyControls.Add(grid);
             grid.Columns.Add(new DataGridTextColumn { Header = "Project", Binding = new System.Windows.Data.Binding("Name"), Width = new DataGridLength(1, DataGridLengthUnitType.Star) });
             grid.Columns.Add(new DataGridTextColumn { Header = "Description", Binding = new System.Windows.Data.Binding("Description"), Width = new DataGridLength(1, DataGridLengthUnitType.Star) });
-            grid.Columns.Add(new DataGridTextColumn { Header = "VCS", Binding = new System.Windows.Data.Binding("VersionControl"), Width = DataGridLength.Auto });
             layout.Children.Add(grid);
             refresh.Click += async (_, __) => await RunAsync(ct => ShowProjectsAsync(null, ct), "Refreshing projects…");
             createProject.Click += async (_, __) => await RunAsync(async ct =>
@@ -718,13 +717,13 @@ namespace Altium17Cloud
         private void UpdateProjectCount()
         {
             int shown = projectView.Cast<object>().Count();
-            projectCount.Text = projectTerms.Length == 0 ? projects.Count + (projects.Count == 1 ? " project" : " projects") :
-                shown + " of " + projects.Count + " projects";
+            projectCount.Text = projectTerms.Length == 0 ? projects.Count + (projects.Count == 1 ? " project found" : " projects found") :
+                shown + " of " + projects.Count + " projects found";
         }
         private async Task ShowProjectsAsync(ProjectPage first, CancellationToken cancellation)
         {
             bool loading = true;
-            var progress = new Progress<int>(count => { if (loading && !disposed) status.Text = "Loading projects… " + count; });
+            var progress = new Progress<int>(count => { if (loading && !disposed) status.Text = "Finding projects… " + count; });
             List<CloudProject> all;
             try { all = await session.AllProjectsAsync(first, progress, cancellation); }
             finally { loading = false; }
@@ -738,7 +737,7 @@ namespace Altium17Cloud
                 projectGrid.SelectedItem = projectView.Contains(selected) ? selected : null;
             }
             UpdateProjectCount();
-            status.Text = projects.Count + (projects.Count == 1 ? " project loaded." : " projects loaded.");
+            status.Text = projects.Count + (projects.Count == 1 ? " project found." : " projects found.");
         }
         private async Task RunAsync(Func<CancellationToken, Task> action, string message, TimeSpan? timeout = null, bool needsWorkingCopy = true)
         {
