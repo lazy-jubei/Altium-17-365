@@ -1,17 +1,18 @@
-// Interactive, read-only integration check; no tokens or private project names are logged.
+// Interactive integration check; writes require --exercise-new-project and use a new test project only.
 using Altium17Cloud;
 using System;
 using System.Diagnostics;
 using System.Net.Http;
+using System.Linq;
 using System.Security.Authentication;
 using System.Threading;
 using System.Threading.Tasks;
 
 static class Program
 {
-    static async Task<int> Main()
+    static async Task<int> Main(string[] args)
     {
-        using (var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(5)))
+        using (var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(args.Contains("--exercise-new-project") ? 15 : 5)))
         using (var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false, SslProtocols = SslProtocols.Tls12 }) { Timeout = TimeSpan.FromSeconds(45) })
         using (var auth = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false, SslProtocols = SslProtocols.Tls12 }) { Timeout = Timeout.InfiniteTimeSpan })
         {
@@ -25,8 +26,19 @@ static class Program
                 Console.WriteLine("Browser sign-in succeeded; workspaces: " + workspaces.Count);
                 if (workspaces.Count == 0) return 1;
                 var first = await session.ConnectAsync(workspaces[0], null, deadline.Token);
-                var all = await session.AllProjectsAsync(first, null, deadline.Token);
-                Console.WriteLine("Workspace token exchange succeeded; projects: " + all.Count);
+                var all = args.Contains("--exercise-new-project") ? first.Projects : await session.AllProjectsAsync(first, null, deadline.Token);
+                Console.WriteLine("Workspace token exchange succeeded; " + (args.Contains("--exercise-new-project") ? "first-page projects: " : "projects: ") + all.Count);
+                int exercise = Array.IndexOf(args, "--exercise-new-project");
+                if (exercise >= 0)
+                {
+                    if (exercise + 1 >= args.Length) throw new ArgumentException("Supply a new evidence folder after --exercise-new-project.");
+                    await ProjectWorkflow.RunAsync(session, args[exercise + 1], deadline.Token);
+                }
+                if (args.Contains("--project-folders"))
+                {
+                    var folders = await session.ProjectFoldersAsync(deadline.Token);
+                    Console.WriteLine("Project folder lookup succeeded; folders: " + folders.Count);
+                }
                 var again = await session.ConnectAsync(workspaces[0], null, deadline.Token);
                 Console.WriteLine("Reconnect succeeded; first page: " + again.Projects.Count);
                 session.Disconnect();

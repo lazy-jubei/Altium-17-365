@@ -41,6 +41,7 @@ namespace Altium17Cloud
         private readonly PasswordBox gitToken = new PasswordBox();
         private readonly TextBlock gitSummary = Label("Choose a project or enter its repository URL, then clone or select a working copy.");
         private readonly Button useProject = Button("Use selected project"), clone = Button("Clone"), gitRefresh = Button("Refresh status"), pull = Button("Pull"), push = Button("Push"), commit = Button("Commit selected"), openProject = Button("Open project");
+        private readonly Button createProject = Button("Create project…");
         private readonly Button saveToServer = Button("Save to Server…");
         private readonly ObservableCollection<GitChange> changes = new ObservableCollection<GitChange>();
         private readonly DataGrid changesGrid = new DataGrid();
@@ -164,7 +165,7 @@ namespace Altium17Cloud
                 clearSearch.IsEnabled = projectSearch.Text.Length > 0;
             };
             var buttons = new WrapPanel();
-            foreach (var button in new[] { refresh, useProject, open }) buttons.Children.Add(button);
+            foreach (var button in new[] { createProject, refresh, useProject, open }) buttons.Children.Add(button);
             DockPanel.SetDock(buttons, Dock.Top); layout.Children.Add(buttons);
             var grid = new DataGrid { ItemsSource = projectView, AutoGenerateColumns = false, IsReadOnly = true, CanUserAddRows = false, CanUserDeleteRows = false, HeadersVisibility = DataGridHeadersVisibility.Column, SelectionMode = DataGridSelectionMode.Single };
             projectGrid = grid;
@@ -175,6 +176,32 @@ namespace Altium17Cloud
             grid.Columns.Add(new DataGridTextColumn { Header = "VCS", Binding = new System.Windows.Data.Binding("VersionControl"), Width = DataGridLength.Auto });
             layout.Children.Add(grid);
             refresh.Click += async (_, __) => await RunAsync(ct => ShowProjectsAsync(null, ct), "Refreshing projects…");
+            createProject.Click += async (_, __) => await RunAsync(async ct =>
+            {
+                var folders = await session.ProjectFoldersAsync(ct);
+                if (folders.Count == 0) throw new InvalidOperationException("No project folders are available in this workspace.");
+                CloudProject created;
+                using (var dialog = new CreateProjectDialog(folders))
+                {
+                    var result = documents == null ? dialog.ShowDialog() : dialog.ShowDialog(documents);
+                    if (result != System.Windows.Forms.DialogResult.OK) { status.Text = "Project creation cancelled."; return; }
+                    status.Text = "Creating project…";
+                    created = await session.CreateProjectAsync(dialog.ProjectName, dialog.SelectedFolder, ct);
+                }
+                // Keep the successful creation visible even if the following list refresh fails.
+                projects.Add(created); projectSearch.Clear(); ApplyProjectFilter(); grid.SelectedItem = created;
+                try
+                {
+                    var ready = await session.ProjectFromReferenceAsync(created.ReferenceId, ct);
+                    if (ready != null) { projects.Remove(created); projects.Add(ready); grid.SelectedItem = ready; }
+                    if (grid.SelectedItem != null) grid.ScrollIntoView(grid.SelectedItem);
+                    status.Text = !string.IsNullOrEmpty(ready?.RepositoryUrl) ? "Project created. Use selected project to clone its working copy." :
+                        "Project created. Refresh the list when Altium 365 finishes preparing its repository.";
+                }
+                catch (Exception error) when (error is OperationCanceledException || error is HttpRequestException || error is InvalidOperationException)
+                { status.Text = "Project created. Refresh the list to load its repository details."; }
+                UpdateProjectCount();
+            }, "Loading project folders…");
             open.Click += (_, __) => { if (session.Connected != null) TryOpen(session.Connected.Url.AbsoluteUri); };
             useProject.Click += (_, __) =>
             {
@@ -222,7 +249,7 @@ namespace Altium17Cloud
             settings.Children.Add(buttons); settings.Children.Add(gitSummary);
             DockPanel.SetDock(settings, Dock.Top); layout.Children.Add(settings);
             var commitArea = new StackPanel();
-            commitArea.Children.Add(Label("Commit message (uses your configured Git author name and email)")); commitArea.Children.Add(commitMessage); commitArea.Children.Add(commit);
+            commitArea.Children.Add(Label("Commit message (optional; uses your configured Git author name and email)")); commitArea.Children.Add(commitMessage); commitArea.Children.Add(commit);
             DockPanel.SetDock(commitArea, Dock.Bottom); layout.Children.Add(commitArea);
             changesGrid.ItemsSource = changes; changesGrid.AutoGenerateColumns = false;
             changesGrid.CanUserAddRows = changesGrid.CanUserDeleteRows = false;
@@ -237,7 +264,13 @@ namespace Altium17Cloud
             {
                 var git = Git();
                 await git.CloneAsync(gitRemote.Text, gitFolder.Text, await GitTokenAsync(ct), gitReference.Text, ct);
-                await RefreshGitAsync(ct); SaveSettings(); status.Text = "Project cloned. Open it to begin editing.";
+                await RefreshGitAsync(ct);
+                if (workingStatus.IsUnborn && changes.Count == 0 && gitProject != null)
+                {
+                    NewProjectFiles.Write(gitFolder.Text, gitProject.Name);
+                    await RefreshGitAsync(ct);
+                }
+                SaveSettings(); status.Text = "Project cloned. Open it to begin editing.";
             }, "Cloning project…", TimeSpan.FromHours(1));
             gitRefresh.Click += async (_, __) => await RunAsync(async ct => { await RefreshGitAsync(ct); SaveSettings(); status.Text = "Working-copy status refreshed."; }, "Reading working-copy status…");
             pull.Click += async (_, __) => await RunAsync(async ct =>
@@ -421,14 +454,13 @@ namespace Altium17Cloud
         }
         private async Task ShowProjectsAsync(ProjectPage first, CancellationToken cancellation)
         {
-            projects.Clear();
-            UpdateProjectCount();
             bool loading = true;
             var progress = new Progress<int>(count => { if (loading && !disposed) status.Text = "Loading projects… " + count; });
             List<CloudProject> all;
             try { all = await session.AllProjectsAsync(first, progress, cancellation); }
             finally { loading = false; }
             if (disposed) return;
+            projects.Clear();
             foreach (var project in all.OrderBy(p => p.Name, StringComparer.CurrentCultureIgnoreCase)) projects.Add(project);
             var selected = all.FirstOrDefault(p => p.RepositoryUrl == gitRemote.Text);
             if (selected != null)
@@ -470,7 +502,7 @@ namespace Altium17Cloud
             cancel.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
             connect.IsEnabled = !busy && session.SignedIn && workspaces.SelectedItem is Workspace;
             logout.IsEnabled = !busy && (session.SignedIn || session.Connected != null || gitToken.Password.Length > 0 || accessToken.Password.Length > 0);
-            refresh.IsEnabled = open.IsEnabled = !busy && session.Connected != null;
+            createProject.IsEnabled = refresh.IsEnabled = open.IsEnabled = !busy && session.Connected != null;
             useProject.IsEnabled = !busy && session.Connected != null && projectGrid?.SelectedItem is CloudProject project && projectView.Contains(project) && !string.IsNullOrEmpty(project.RepositoryUrl);
             clone.IsEnabled = gitRefresh.IsEnabled = !busy;
             pull.IsEnabled = push.IsEnabled = !busy && workingStatus?.Branch == "master";

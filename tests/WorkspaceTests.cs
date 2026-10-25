@@ -154,6 +154,7 @@ internal static class Program
                 Require(!session.SignedIn && session.Connected == null, "failed OAuth does not commit a session");
             }
         }
+        await ProjectCreationChecks(none);
         if (Array.IndexOf(args, "--live-probe") >= 0)
         {
             using (var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false, SslProtocols = System.Security.Authentication.SslProtocols.Tls12 }) { Timeout = TimeSpan.FromSeconds(20) })
@@ -168,6 +169,72 @@ internal static class Program
             }
         }
         Console.WriteLine(passed + " checks passed.");
+    }
+    static async Task ProjectCreationChecks(CancellationToken none)
+    {
+        var handler = new CreationHandler();
+        using (var http = new HttpClient(handler))
+        {
+            var api = new WorkspaceApi(http);
+            var workspace = new Workspace { Url = WorkspaceApi.WorkspaceUrl("board.365.altium.com"), ApiUrl = new Uri(WorkspaceApi.Regions[0].Value) };
+            var folder = new ProjectFolder { Id = "folder-reference", Path = "Projects" };
+            foreach (string bad in new[] { "", "../board", "a\\b", "CON", "NUL.txt", "COM1", "LPT9", "board.", "bad\nname", new string('x', 101) })
+                await Reject(() => api.CreateProjectAsync(workspace, "fixture-token", bad, folder, none), "rejects invalid project filename before creating");
+            Require(handler.Calls == 0, "invalid names make no network requests");
+            var project = await api.CreateProjectAsync(workspace, "fixture-token", " Board ü ", folder, none);
+            Require(project.ReferenceId == "created-reference" && project.Name == "Board ü", "creates a named project from the service result");
+            Require(handler.CreateUrl == "https://usw.365.altium.com/multicad/api/v1/projects" && handler.Auth == "Bearer fixture-token", "uses the advertised project service and request-scoped credentials");
+            Require((string)handler.Payload["name"] == "Board ü" && (string)handler.Payload["folderId"] == folder.Id && (string)handler.Payload["folderPath"] == "Projects/Board ü", "creation passes the selected folder reference and path without uploading existing files");
+            Require((string)handler.Payload["repositoryGuid"] == "internal-git" && (string)handler.Payload["directoryName"] == "Board ü" && handler.Payload["ProjectParameters"] == null, "new projects use accessible internal Git storage without copying existing project parameters");
+            var ready = await api.ProjectFromReferenceAsync(workspace, "fixture-token", project.ReferenceId, none);
+            Require(ready.Id == "opaque-project-node" && ready.RepositoryUrl == "https://afs.365.altium.com/opaque.git", "resolves the created project's reference through the API instead of constructing IDs or Git URLs");
+            handler.FailMutation = true;
+            int before = handler.Calls;
+            await Reject(() => api.CreateProjectAsync(workspace, "fixture-token", "Board", folder, none), "uncertain creation tells users to refresh before retrying", "may already have created");
+            Require(handler.Calls == before + 5, "failed creation is never automatically retried");
+            handler.FailMutation = false; handler.RejectValidation = true; before = handler.Creations;
+            await Reject(() => api.CreateProjectAsync(workspace, "fixture-token", "Board", folder, none), "unavailable names are rejected before creation", "unavailable");
+            Require(handler.Creations == before, "validation failure makes no creation request");
+            handler.RejectValidation = false; handler.AmbiguousRepositories = true;
+            await Reject(() => api.CreateProjectAsync(workspace, "fixture-token", "Board", folder, none), "ambiguous storage gives an actionable error", "unambiguous");
+            Require(handler.Creations == before, "ambiguous storage never creates a project in an arbitrary repository");
+            handler.AmbiguousRepositories = false; handler.UnsafeLink = true;
+            await Reject(() => api.CreateProjectAsync(workspace, "fixture-token", "Board", folder, none), "rejects unsafe advertised service links before sending credentials");
+            Require(handler.Creations == before, "unsafe discovery leaves the workspace unchanged");
+        }
+    }
+    sealed class CreationHandler : HttpMessageHandler
+    {
+        internal int Calls, Creations;
+        internal string CreateUrl, Auth;
+        internal JObject Payload;
+        internal bool FailMutation, RejectValidation, UnsafeLink, AmbiguousRepositories;
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellation)
+        {
+            cancellation.ThrowIfCancellationRequested(); Calls++; Auth = request.Headers.Authorization?.ToString();
+            string path = request.RequestUri.AbsolutePath;
+            if (path == "/svc/explorer/api/") return Reply(new JObject { ["formatList"] = new JArray(new JObject { ["name"] = "Project", ["links"] = new JArray(
+                new JObject { ["rel"] = "Create", ["verb"] = "POST", ["href"] = UnsafeLink ? "https://attacker.invalid/projects" : "https://usw.365.altium.com/multicad/api/v1/projects" },
+                new JObject { ["rel"] = "Validate", ["verb"] = "POST", ["href"] = "https://usw.365.altium.com/multicad/api/v1/designs/validate" }) }) }.ToString());
+            if (path.EndsWith("/validate")) return Reply(new JObject { ["status"] = RejectValidation ? "AlreadyExists" : "IsUniqueDesign" }.ToString());
+            if (request.Method == HttpMethod.Get) return Reply(new JObject { ["RepositoryGuid"] = AmbiguousRepositories ? "missing-default" : "internal-git", ["Repositories"] = new JArray(
+                new JObject { ["GUID"] = "external", ["IsExternal"] = AmbiguousRepositories ? 0 : 1, ["RepoType"] = 2, ["Accessible"] = "True" },
+                new JObject { ["GUID"] = "internal-git", ["IsExternal"] = 0, ["RepoType"] = 2, ["Accessible"] = "True" }) }.ToString());
+            if (path.EndsWith("/projects"))
+            {
+                Creations++; CreateUrl = request.RequestUri.AbsoluteUri; Payload = JObject.Parse(await request.Content.ReadAsStringAsync());
+                if (FailMutation) throw new HttpRequestException("private-server-response");
+                return Reply("{\"guid\":\"created-reference\"}");
+            }
+            var query = JObject.Parse(await request.Content.ReadAsStringAsync());
+            if (((string)query["query"]).Contains("desProjects(first: 1)")) return Reply("{\"data\":{\"desProjects\":{\"nodes\":[{\"projectId\":\"existing-reference\"}]}}}");
+            if (((string)query["query"]).Contains("desProjectIdFromAfsId"))
+            {
+                if ((string)query["variables"]["reference"] != "created-reference") throw new Exception("Wrong reference.");
+                return Reply("{\"data\":{\"desProjectIdFromAfsId\":{\"id\":\"opaque-project-node\"}}}");
+            }
+            return Reply("{\"data\":{\"desProjectById\":{\"id\":\"opaque-project-node\",\"name\":\"Board ü\",\"repositoryUrl\":\"https://afs.365.altium.com/opaque.git\"}}}");
+        }
     }
     sealed class Pages : HttpMessageHandler
     {

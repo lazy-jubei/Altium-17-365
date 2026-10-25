@@ -33,7 +33,7 @@ namespace Altium17Cloud
                 item.SubItems.Add(change.OriginalPath == null ? change.Path : change.OriginalPath + " → " + change.Path); files.Items.Add(item);
             }
             layout.Controls.Add(files, 0, 2);
-            layout.Controls.Add(new Label { Text = "Comment", AutoSize = true, Padding = new Padding(0, 8, 0, 4) }, 0, 3);
+            layout.Controls.Add(new Label { Text = "Comment (optional)", AutoSize = true, Padding = new Padding(0, 8, 0, 4) }, 0, 3);
             comment.Text = previousComment ?? ""; layout.Controls.Add(comment, 0, 4);
             var buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(0, 10, 0, 0) };
             var cancel = new Button { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
@@ -44,6 +44,6 @@ namespace Altium17Cloud
             Shown += (_, __) => { UpdateSaveButton(); comment.Focus(); };
             UpdateSaveButton();
         }
-        private void UpdateSaveButton() => save.Enabled = files.CheckedItems.Count > 0 ? !string.IsNullOrWhiteSpace(comment.Text) : outgoing > 0;
+        private void UpdateSaveButton() => save.Enabled = files.CheckedItems.Count > 0 || outgoing > 0;
     }
 }

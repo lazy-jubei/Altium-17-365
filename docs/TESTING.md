@@ -1,5 +1,17 @@
 # Verification
 
+## v0.3.0 project creation and blank comments
+
+24 October 2026:
+
+- Created one isolated PCB project in the authenticated workspace. Creation follows the web client's advertised project-service links, validates the name and uses accessible internal Git storage. It reads storage metadata only; it never copies existing design documents, project parameters or sharing settings. An empty workspace currently needs its first project created through the workspace browser to expose that storage metadata.
+- The documented GraphQL upload mutation returned a backend sign-in error. Read-only checks confirmed the unsuccessful attempts created no projects; the project-service route completed successfully. A lost creation response is never automatically retried.
+- New cloud repositories have no commits or `master` ref. Clone now supports that state, selects an unborn `master` and can create a blank `.PrjPcb` locally. The first selected-file commit preserves unrelated staged files.
+- Three empty-message commits tested add, edit and deletion, each verified through an independent clone or pull. A fourth empty-message commit uploaded `NativeUploadCheck.txt` through the actual AD17 **Save to Server** dialog with its comment field blank. A subsequent independent pull matched the final revision. **Total live test commits: 4 of the allowed 10.** The test project remains available for further work.
+- In AD17 17.1 under Wine, the native **Create project** dialog opened, loaded workspace folders and rejected an existing name before creation. The test `.PrjPcb` opens normally. No exception or parent-window error appeared during these checks.
+- All 101 workspace/API checks and 77 Git checks pass on .NET 8 and Wine/.NET Framework 4.8. The plugin and installer build without warnings or errors; 18 installer checks and 6 deployment checks pass. Tests cover safe service links, creation validation, no automatic mutation retry, empty repositories, first saves and blank commit messages.
+
+
 ## v0.2.1 installer fix
 
 24 October 2026: fixed the setup window's Close button, which previously set a dialog result without closing the modeless form. The rebuilt installer exits successfully when Close is clicked under Wine. The build has no warnings or errors; all 18 installer checks and 6 deployment checks pass.
@@ -54,7 +66,7 @@ Source build verified on 13 October 2026:
 - The previous 42-check Git suite passed under patched Wine 11.16 with x86 .NET Framework 4.8 and MinGit 2.56.0.windows.2 before the Save to Server addition. This run used an isolated APFS copy of the AD17 prefix with its stale mounted-image drive mappings removed before initialization. It includes real clone, selected-file commit, pull, push, cancellation and bounded output. The first run exceeded a 90-second time limit while still progressing; the complete run finished successfully with a longer limit. The expanded 60-check suite subsequently passed in the active prefix on 23 October.
 - On 13 October, the original running Wine session could not launch the Git CLI or attach through desktop control; a read-only sample showed its Wine server blocked in `req_create_file` / `open`. The 23 October retest above supersedes that runtime limitation.
 
-Native File-menu Save to Server visibility, filesystem/document notifications and saving modified documents through AD17 remain **unverified**. The native Save to Server review opened and cancelled without committing or uploading. The SDK calls and command-state delegate compile against the installed AD17 assemblies. Direct Git mode requires a repository URL and Workspace token, but does not call GraphQL or use an OAuth client ID. The project-browser route still requires API access. No existing AD26/browser token is harvested or copied.
+Native File-menu Save to Server visibility, filesystem/document notifications and saving modified editor documents through AD17 remain **unverified**. The v0.3.0 test above verifies the native panel uploading a saved file with an empty comment. The native Save to Server review opened and cancelled without committing or uploading. The SDK calls and command-state delegate compile against the installed AD17 assemblies. Direct Git mode requires a repository URL and Workspace token, but does not call GraphQL or use an OAuth client ID. The project-browser route still requires API access. No existing AD26/browser token is harvested or copied.
 
 An earlier authenticated Workspace browser session successfully exported a project source archive containing native Altium documents. The archive has no Git working-copy metadata; this verifies browser export only. Its project files remain outside this public repository. A read-only Git remote check using the exact URL from an existing modern Altium working copy failed because no usable Git credential was available. Browser-native project launching reports that macOS is unsupported.
 

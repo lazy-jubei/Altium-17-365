@@ -73,6 +73,14 @@ namespace Altium17Cloud
             var token = await AccessTokenAsync(cancellation).ConfigureAwait(false);
             return await api.ProjectsAsync(Connected, token, cursor, cancellation).ConfigureAwait(false);
         }
+        public async Task<List<ProjectFolder>> ProjectFoldersAsync(CancellationToken cancellation) =>
+            await api.ProjectFoldersAsync(Connected, await AccessTokenAsync(cancellation).ConfigureAwait(false), cancellation).ConfigureAwait(false);
+        public async Task<CloudProject> CreateProjectAsync(string name, ProjectFolder folder, CancellationToken cancellation) =>
+            await api.CreateProjectAsync(Connected, await AccessTokenAsync(cancellation).ConfigureAwait(false), name, folder, cancellation).ConfigureAwait(false);
+        public async Task<CloudProject> ProjectFromReferenceAsync(string reference, CancellationToken cancellation) =>
+            await api.ProjectFromReferenceAsync(Connected, await AccessTokenAsync(cancellation).ConfigureAwait(false), reference, cancellation).ConfigureAwait(false);
+        public async Task<CloudProject> ProjectAsync(string id, CancellationToken cancellation) =>
+            await api.ProjectAsync(Connected, await AccessTokenAsync(cancellation).ConfigureAwait(false), id, cancellation).ConfigureAwait(false);
         public async Task<List<CloudProject>> AllProjectsAsync(ProjectPage first, IProgress<int> progress, CancellationToken cancellation)
         {
             var result = new List<CloudProject>();

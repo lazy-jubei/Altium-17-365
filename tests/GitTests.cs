@@ -165,6 +165,7 @@ internal static class Program
             await Reject(() => new ProcessGitRunner(self).RunAsync(sleep, None), "bounds child-process output", "too much output");
             await Reject(() => new ProcessGitRunner(self).RunAsync(network, None), "older Git is rejected before receiving credentials", "2.31");
             await ServerSaveChecks(root, bare);
+            await EmptyProjectChecks(root);
             Console.WriteLine(passed + " Git checks passed.");
         }
         finally
@@ -172,6 +173,25 @@ internal static class Program
             foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)) File.SetAttributes(file, FileAttributes.Normal);
             Directory.Delete(root, true);
         }
+    }
+    static async Task EmptyProjectChecks(string root)
+    {
+        string bare = Path.Combine(root, "new project.git"), copy = Path.Combine(root, "new project"), second = Path.Combine(root, "new project second");
+        await Plain(root, "init", "--bare", "--initial-branch=master", bare);
+        var git = new WorkspaceGit(new LocalRemoteRunner(bare));
+        await git.CloneAsync(Remote, copy, Token, None); await Author(copy);
+        var status = await git.StatusAsync(Remote, copy, None);
+        Require(status.IsUnborn && status.Branch == "master" && !status.HasPendingSave, "clones a new empty workspace repository on an unborn master branch");
+        await git.PullAsync(Remote, copy, Token, None);
+        string project = NewProjectFiles.Write(copy, "Board");
+        await Reject(() => Task.FromResult(NewProjectFiles.Write(copy, "Board")), "blank project creation never overwrites an existing file");
+        Require(File.ReadAllText(project) == "[Design]\r\nVersion=1.0\r\n", "blank projects contain only new Altium project settings");
+        File.WriteAllText(Path.Combine(copy, "Other.txt"), "leave staged"); await Plain(copy, "add", "Other.txt");
+        await git.SaveToServerAsync(Remote, copy, new[] { "Board.PrjPcb" }, "", Token, None);
+        Require((await Plain(copy, "log", "-1", "--format=%B")).Output.Trim().Length == 0, "first commit supports an empty comment");
+        Require((await Plain(copy, "diff", "--cached", "--name-only")).Output.Trim() == "Other.txt", "initial selected-file save preserves unrelated staged files");
+        await git.CloneAsync(Remote, second, Token, None);
+        Require(File.Exists(Path.Combine(second, "Board.PrjPcb")) && !File.Exists(Path.Combine(second, "Other.txt")), "fresh clone retrieves only the new project's selected source files");
     }
     static async Task ServerSaveChecks(string root, string bare)
     {
@@ -202,6 +222,10 @@ internal static class Program
         Require((await git.StatusAsync(Remote, folder, None)).OutgoingCommits == 0, "successful upload clears the pending-commit indicator");
         await git.SaveToServerAsync(Remote, folder, new[] { "other.txt" }, "Save remaining file", Token, None);
         Require(!(await git.StatusAsync(Remote, folder, None)).HasPendingSave, "successful server save returns the project to an up-to-date state");
+        File.WriteAllText(Path.Combine(folder, "Board.SchDoc"), "save without a comment");
+        await git.SaveToServerAsync(Remote, folder, new[] { "Board.SchDoc" }, "", Token, None);
+        Require((await Plain(folder, "log", "-1", "--format=%B")).Output.Trim().Length == 0, "blank Save to Server comment creates an empty Git message");
+        Require(!(await git.StatusAsync(Remote, folder, None)).HasPendingSave, "blank-comment save uploads successfully without an extra commit");
         int before = runner.NetworkCalls;
         await Reject(() => git.SaveToServerAsync(Remote, folder, Array.Empty<string>(), "", Token, None), "empty server save does not upload", "Select changed files");
         Require(runner.NetworkCalls == before, "up-to-date project makes no server-save network request");

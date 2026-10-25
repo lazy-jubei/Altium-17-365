@@ -186,6 +186,7 @@ namespace Altium17Cloud
     public sealed class GitStatus
     {
         public string Branch { get; set; }
+        public bool IsUnborn { get; set; }
         public int OutgoingCommits { get; set; }
         public int IncomingCommits { get; set; }
         public bool HasPendingSave => Changes.Count > 0 || OutgoingCommits > 0;
@@ -288,7 +289,7 @@ namespace Altium17Cloud
             string parent = System.IO.Path.GetDirectoryName(folder);
             if (parent == null || !Directory.Exists(parent)) throw new ArgumentException("The parent of the clone folder must already exist.");
             // Preserve repository bytes when this checkout is also used by a macOS Git client.
-            var arguments = new List<string> { "clone", "--config", "core.autocrlf=false", "--origin", "origin", "--branch", "master" };
+            var arguments = new List<string> { "clone", "--config", "core.autocrlf=false", "--origin", "origin" };
             if (!string.IsNullOrWhiteSpace(reference))
             {
                 reference = Folder(reference);
@@ -301,9 +302,24 @@ namespace Altium17Cloud
                 arguments.AddRange(new[] { "--reference-if-able", reference, "--dissociate" });
             }
             // Fail authentication before creating a working copy or requesting its full history.
-            await RunAsync(Command(parent, new[] { "ls-remote", "--exit-code", remote, "refs/heads/master" }, remote, token), cancellation).ConfigureAwait(false);
+            var refs = await RunAsync(Command(parent, new[] { "ls-remote", remote }, remote, token), cancellation).ConfigureAwait(false);
+            bool empty = string.IsNullOrWhiteSpace(refs.Output);
+            if (!empty)
+            {
+                if (!refs.Output.Split('\n').Any(line => line.TrimEnd('\r').EndsWith("\trefs/heads/master", StringComparison.Ordinal)))
+                    throw new GitOperationException("Altium 365 tracks master, but this repository has no master branch.");
+                arguments.AddRange(new[] { "--branch", "master" });
+            }
             arguments.AddRange(new[] { "--", remote, folder });
             await RunAsync(Command(parent, arguments, remote, token), cancellation).ConfigureAwait(false);
+            if (empty && !await HasHeadAsync(folder, cancellation).ConfigureAwait(false))
+                await RunAsync(Command(folder, new[] { "symbolic-ref", "HEAD", "refs/heads/master" }), cancellation).ConfigureAwait(false);
+        }
+        private async Task<bool> HasHeadAsync(string folder, CancellationToken cancellation)
+        {
+            var result = await runner.RunAsync(Command(folder, new[] { "rev-parse", "--verify", "--quiet", "HEAD" }), cancellation).ConfigureAwait(false);
+            if (result.ExitCode != 0 && result.ExitCode != 1) throw new GitOperationException("Cannot read this working copy's Git history.");
+            return result.ExitCode == 0;
         }
         public async Task<GitStatus> StatusAsync(string remote, string folder, CancellationToken cancellation)
         {
@@ -319,9 +335,9 @@ namespace Altium17Cloud
                     throw new ArgumentException("This folder's fetch or push remote does not match the selected Altium 365 project.");
             }
             var branch = await RunAsync(Command(folder, new[] { "symbolic-ref", "--quiet", "--short", "HEAD" }), cancellation).ConfigureAwait(false);
-            var status = new GitStatus { Branch = branch.Output.Trim() };
+            var status = new GitStatus { Branch = branch.Output.Trim(), IsUnborn = !await HasHeadAsync(folder, cancellation).ConfigureAwait(false) };
             var tracking = await RunAsync(Command(folder, new[] { "for-each-ref", "--format=%(objectname)", "refs/remotes/origin/master" }), cancellation).ConfigureAwait(false);
-            var counts = await RunAsync(Command(folder, tracking.Output.Trim().Length == 0 ?
+            var counts = status.IsUnborn ? new GitResult { Output = "0" } : await RunAsync(Command(folder, tracking.Output.Trim().Length == 0 ?
                 new[] { "rev-list", "--count", "HEAD" } :
                 new[] { "rev-list", "--count", "--left-right", "HEAD...refs/remotes/origin/master" }), cancellation).ConfigureAwait(false);
             var parts = counts.Output.Trim().Split(new[] { '\t', ' ' }, StringSplitOptions.RemoveEmptyEntries);
@@ -367,6 +383,7 @@ namespace Altium17Cloud
         {
             var status = await MasterAsync(remote, folder, cancellation).ConfigureAwait(false);
             if (status.Changes.Count != 0) throw new GitOperationException("Commit or set aside your working-copy changes before pulling. No files were stashed or discarded.");
+            if (status.IsUnborn && string.IsNullOrWhiteSpace((await RunAsync(Command(Folder(folder), new[] { "ls-remote", remote, "refs/heads/master" }, remote, token), cancellation).ConfigureAwait(false)).Output)) return;
             await RunAsync(Command(Folder(folder), new[] { "pull", "--ff-only", "--no-rebase", "origin", "master" }, remote, token), cancellation).ConfigureAwait(false);
         }
         public async Task PushAsync(string remote, string folder, string token, CancellationToken cancellation)
@@ -376,7 +393,6 @@ namespace Altium17Cloud
         }
         public async Task CommitAsync(string remote, string folder, IEnumerable<string> selectedPaths, string message, CancellationToken cancellation)
         {
-            if (string.IsNullOrWhiteSpace(message)) throw new ArgumentException("Enter a commit message.");
             var status = await MasterAsync(remote, folder, cancellation).ConfigureAwait(false);
             var chosen = (selectedPaths ?? Array.Empty<string>()).Distinct(StringComparer.Ordinal).ToArray();
             var changed = new HashSet<string>(status.Changes.SelectMany(c => c.OriginalPath == null || !c.Status.Contains("R") ? new[] { c.Path } : new[] { c.Path, c.OriginalPath }), StringComparer.Ordinal);
@@ -385,7 +401,7 @@ namespace Altium17Cloud
             var staging = status.Changes.Where(c => chosen.Contains(c.Path) && !(c.Status[0] == 'D' && !File.Exists(System.IO.Path.Combine(Folder(folder), c.Path)))).Select(c => c.Path).Distinct(StringComparer.Ordinal).ToArray();
             if (staging.Length != 0) await RunAsync(Command(Folder(folder), new[] { "add", "--all", "--" }.Concat(staging)), cancellation).ConfigureAwait(false);
             // --only preserves unrelated files already staged by another Git client.
-            await RunAsync(Command(Folder(folder), new[] { "commit", "--only", "-m", message, "--" }.Concat(chosen)), cancellation).ConfigureAwait(false);
+            await RunAsync(Command(Folder(folder), new[] { "commit", "--only", "--allow-empty-message", "-m", message ?? "", "--" }.Concat(chosen)), cancellation).ConfigureAwait(false);
         }
         public async Task SaveToServerAsync(string remote, string folder, IEnumerable<string> selectedPaths, string message, string token, CancellationToken cancellation)
         {

@@ -24,6 +24,7 @@ namespace Altium17Cloud
     }
     public sealed class CloudProject
     {
+        public string ReferenceId { get; set; }
         public string Id { get; set; }
         public string Name { get; set; }
         public string Description { get; set; }
@@ -36,7 +37,7 @@ namespace Altium17Cloud
         public bool HasNext { get; set; }
         public string Cursor { get; set; }
     }
-    public sealed class WorkspaceApi
+    public sealed partial class WorkspaceApi
     {
         private readonly HttpClient http;
         public WorkspaceApi(HttpClient http) { this.http = http ?? throw new ArgumentNullException(nameof(http)); }
