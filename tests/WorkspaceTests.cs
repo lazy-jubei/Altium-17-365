@@ -69,6 +69,14 @@ internal static class Program
             handler.Responses.Enqueue(Reply("{\"data\":{\"desWorkspaceInfos\":[{\"authId\":\"workspace-id\",\"name\":\"Board\",\"url\":\"https://board.365.altium.com\",\"location\":{\"name\":\"US West\"}}]}}"));
             var list = await api.DiscoverAsync(WorkspaceApi.Regions[0].Value, "global-token", none);
             Require(list.Count == 1 && list[0].Id == "workspace-id" && list[0].Name == "Board", "discovers workspace identity and origin");
+            Require(handler.LastUrl.AbsolutePath == "/napi/gateway/graphql" && handler.LastBody.Contains("apiServiceUrl") && !handler.LastBody.Contains("location { name"), "discovery uses the Developer gateway and current location fields");
+            handler.Responses.Enqueue(Reply("{\"data\":{\"desWorkspaceInfos\":[{\"authId\":\"workspace-id\",\"name\":\"Board\",\"url\":\"https://board.365.altium.com\",\"location\":{\"apiServiceUrl\":\"https://use.365.altium.com/napi/gateway/graphql\"}}]}}"));
+            var routed = (await api.DiscoverAsync(WorkspaceApi.Regions[0].Value, "global-token", none))[0];
+            handler.Responses.Enqueue(Reply(Page()));
+            await api.ProjectsAsync(routed, "workspace-token", null, none);
+            Require(handler.LastUrl.AbsoluteUri == routed.ApiUrl.AbsoluteUri, "project query uses the workspace's advertised cluster endpoint");
+            foreach (var badEndpoint in new[] { "http://board.365.altium.com/api/graphql", "https://altium.com.evil.test/api/graphql", "https://secret@board.365.altium.com/api/graphql", "https://board.365.altium.com/api/graphql?token=secret", "https://board.365.altium.com/login", "https://board.365.altium.com/api/graphql#secret" })
+                await Reject(() => Task.FromResult(WorkspaceApi.ValidateEndpoint(new Uri(badEndpoint))), "rejects unsafe service endpoint");
             await Reject(() => api.DiscoverAsync("https://attacker.test/", "global-token", none), "rejects unknown discovery region before sending token");
             var session = new WorkspaceSession(api, authHttp);
             handler.Responses.Enqueue(Reply(Page()));
@@ -91,11 +99,12 @@ internal static class Program
             await Reject(() => session.ProjectsAsync(null, none), "cannot fetch after disconnect");
             await Reject(() => session.AccessTokenAsync(none), "Git cannot reuse credentials after disconnect");
             await Reject(() => session.ConnectAsync(null, "test-token", none), "missing workspace gets a clear error");
-            await Reject(() => session.SignInAsync("", WorkspaceApi.Regions[0].Value, _ => {}, none), "browser login requires registered ID");
+            await Reject(() => session.SignInAsync("", WorkspaceApi.Regions[0].Value, _ => {}, none), "explicit client override cannot be empty");
             await Reject(() => session.SignInAsync("test-id", "invalid", _ => {}, none), "invalid region rejected before browser sign-in");
         }
         var flow = new AuthHandler();
         var flowApi = new FakeHandler();
+        flowApi.Responses.Enqueue(Reply(Page()));
         flowApi.Responses.Enqueue(Reply("{\"data\":{\"desWorkspaceInfos\":[{\"authId\":\"id-1\",\"name\":\"Board\",\"url\":\"https://board.365.altium.com\"}]}}"));
         flowApi.Responses.Enqueue(Reply(Page())); flowApi.Responses.Enqueue(Reply(Page()));
         using (var authHttp = new HttpClient(flow))
@@ -106,9 +115,11 @@ internal static class Program
             flow.Tokens.Enqueue("{\"access_token\":\"workspace-original\",\"refresh_token\":\"workspace-refresh\",\"expires_in\":1}");
             flow.Tokens.Enqueue("{\"access_token\":\"workspace-refreshed\",\"expires_in\":3600}");
             var session = new WorkspaceSession(new WorkspaceApi(http), authHttp);
+            await session.ConnectAsync(new Workspace { Url = WorkspaceApi.WorkspaceUrl("previous.365.altium.com") }, "previous-identity-token", none);
             string browserUrl = null;
-            var workspaces = await session.SignInAsync("our-client", WorkspaceApi.Regions[0].Value, url => browserUrl = url, none);
-            Require(session.SignedIn && browserUrl.Contains("client_id=our-client") && browserUrl.Contains("code_challenge=") && browserUrl.Contains("code_challenge_method=S256"), "browser sign-in uses our configured client ID and PKCE");
+            var workspaces = await session.SignInAsync(WorkspaceApi.Regions[0].Value, url => browserUrl = url, none);
+            Require(session.SignedIn && browserUrl.Contains("client_id=" + WorkspaceSession.DefaultClientId) && browserUrl.Contains("code_challenge=") && browserUrl.Contains("code_challenge_method=S256"), "browser sign-in uses the built-in public client and PKCE");
+            Require(session.Connected == null, "successful account sign-in clears the previous workspace identity");
             await session.ConnectAsync(workspaces[0], null, none);
             Require(flow.Forms.Exists(form => form.Contains("grant_type=refresh_token") && form.Contains("refresh_token=global-refresh")), "refreshes expired global token before workspace exchange");
             Require(flow.Forms.Exists(form => form.Contains("subject_token=global-refreshed") && form.Contains("a365%3Aworkspace%3Aid-1")), "exchanges refreshed global token for chosen workspace scope");
@@ -116,6 +127,21 @@ internal static class Program
             await session.ProjectsAsync(null, none);
             Require(flow.Forms.Exists(form => form.Contains("refresh_token=workspace-refresh")), "refreshes workspace token using its own issuing client");
             Require(session.Connected == workspaces[0], "OAuth workspace query establishes connection");
+        }
+        using (var http = new HttpClient(new Pages()))
+        using (var auth = new HttpClient())
+        {
+            var session = new WorkspaceSession(new WorkspaceApi(http), auth);
+            var first = await session.ConnectAsync(new Workspace { Url = WorkspaceApi.WorkspaceUrl("board.365.altium.com") }, "fixture-token", none);
+            var all = await session.AllProjectsAsync(first, null, none);
+            Require(all.Count == 3 && all[2].Id == "p3", "loads all pages and deduplicates overlapping projects");
+            var cycle = new ProjectPage { HasNext = true, Cursor = "cycle" };
+            await Reject(() => session.AllProjectsAsync(cycle, null, none), "detects cyclic pagination", "repeated project page");
+            using (var cancelled = new CancellationTokenSource())
+            {
+                cancelled.Cancel();
+                await Reject(() => session.AllProjectsAsync(first, null, cancelled.Token), "cancellation interrupts full project loading");
+            }
         }
         foreach (bool wrongState in new[] { false, true })
         {
@@ -142,6 +168,19 @@ internal static class Program
             }
         }
         Console.WriteLine(passed + " checks passed.");
+    }
+    sealed class Pages : HttpMessageHandler
+    {
+        int calls;
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellation)
+        {
+            calls++;
+            var nodes = calls == 1 ? new JArray(new JObject { ["id"] = "p1", ["name"] = "One" }) :
+                new JArray(new JObject { ["id"] = calls == 2 ? "p2" : "p3", ["name"] = "Another" }, new JObject { ["id"] = "p1" });
+            var info = new JObject { ["hasNextPage"] = calls != 3, ["endCursor"] = calls >= 4 ? (calls % 2 == 0 ? "other" : "cycle") : "page" + calls };
+            var body = new JObject { ["data"] = new JObject { ["desProjects"] = new JObject { ["nodes"] = nodes, ["pageInfo"] = info } } };
+            return Task.FromResult(Reply(body.ToString()));
+        }
     }
     sealed class AuthHandler : HttpMessageHandler
     {

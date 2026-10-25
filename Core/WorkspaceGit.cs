@@ -278,14 +278,32 @@ namespace Altium17Cloud
                 throw new GitOperationException("Cannot reach the Git server. Check your connection and Git's certificate configuration.");
             throw new GitOperationException("Git could not complete this operation. Check the working copy and repository access with an external Git client.");
         }
-        public async Task CloneAsync(string remote, string folder, string token, CancellationToken cancellation)
+        public Task CloneAsync(string remote, string folder, string token, CancellationToken cancellation) =>
+            CloneAsync(remote, folder, token, null, cancellation);
+        public async Task CloneAsync(string remote, string folder, string token, string reference, CancellationToken cancellation)
         {
             ValidateRemote(remote); folder = Folder(folder);
             if (File.Exists(folder) || (Directory.Exists(folder) && Directory.EnumerateFileSystemEntries(folder).Any()))
                 throw new ArgumentException("Clone needs a new or empty folder. Choose a different folder to preserve its existing files.");
             string parent = System.IO.Path.GetDirectoryName(folder);
             if (parent == null || !Directory.Exists(parent)) throw new ArgumentException("The parent of the clone folder must already exist.");
-            await RunAsync(Command(parent, new[] { "clone", "--origin", "origin", "--branch", "master", "--", remote, folder }, remote, token), cancellation).ConfigureAwait(false);
+            // Preserve repository bytes when this checkout is also used by a macOS Git client.
+            var arguments = new List<string> { "clone", "--config", "core.autocrlf=false", "--origin", "origin", "--branch", "master" };
+            if (!string.IsNullOrWhiteSpace(reference))
+            {
+                reference = Folder(reference);
+                if (!Directory.Exists(reference)) throw new ArgumentException("The clone cache must be an existing checkout of this project.");
+                var prefix = await RunAsync(Command(reference, new[] { "rev-parse", "--show-prefix" }), cancellation).ConfigureAwait(false);
+                var origin = await RunAsync(Command(reference, new[] { "remote", "get-url", "--all", "origin" }), cancellation).ConfigureAwait(false);
+                if (prefix.Output.Trim().Length != 0 || origin.Output.TrimEnd('\r', '\n') != remote)
+                    throw new ArgumentException("Choose the root of an existing checkout with the same Altium 365 repository URL.");
+                // Reuse immutable objects without changing the cache or retaining a dependency on it.
+                arguments.AddRange(new[] { "--reference-if-able", reference, "--dissociate" });
+            }
+            // Fail authentication before creating a working copy or requesting its full history.
+            await RunAsync(Command(parent, new[] { "ls-remote", "--exit-code", remote, "refs/heads/master" }, remote, token), cancellation).ConfigureAwait(false);
+            arguments.AddRange(new[] { "--", remote, folder });
+            await RunAsync(Command(parent, arguments, remote, token), cancellation).ConfigureAwait(false);
         }
         public async Task<GitStatus> StatusAsync(string remote, string folder, CancellationToken cancellation)
         {
@@ -326,6 +344,16 @@ namespace Altium17Cloud
                     change.OriginalPath = records[i];
                 }
                 status.Changes.Add(change);
+            }
+            if (status.Changes.Any(c => c.Status[1] == 'M'))
+            {
+                // Cross-platform index stat caches can report unchanged files as modified.
+                // Compare actual worktree changes without rewriting the index or invoking converters.
+                var diff = await RunAsync(Command(folder, new[] { "diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z" }), cancellation).ConfigureAwait(false);
+                var modified = new HashSet<string>(diff.Output.Split('\0'), StringComparer.Ordinal);
+                foreach (var change in status.Changes.Where(c => c.Status[1] == 'M' && !modified.Contains(c.Path)))
+                    change.Status = change.Status[0] + " ";
+                status.Changes.RemoveAll(c => c.Status == "  ");
             }
             return status;
         }

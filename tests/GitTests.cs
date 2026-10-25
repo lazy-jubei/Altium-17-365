@@ -51,12 +51,14 @@ internal static class Program
             await Plain(root, "init", "--bare", "--initial-branch=master", bare);
             Directory.CreateDirectory(seed); await Plain(seed, "init", "--initial-branch=master"); await Author(seed);
             File.WriteAllText(Path.Combine(seed, "Board.PrjPcb"), "test project source");
+            File.WriteAllText(Path.Combine(seed, "Library.step"), "HEADER;\nENDSEC;\n");
             await Plain(seed, "add", "--all"); await Plain(seed, "commit", "-m", "Initial project");
             await Plain(seed, "remote", "add", "origin", bare); await Plain(seed, "push", "origin", "master");
             var runner = new LocalRemoteRunner(bare); var git = new WorkspaceGit(runner);
             await git.CloneAsync(Remote, a, Token, None); await Author(a);
             var status = await git.StatusAsync(Remote, a, None);
             Require(status.Branch == "master" && status.Changes.Count == 0 && File.Exists(Path.Combine(a, "Board.PrjPcb")), "real Git clones a clean master working copy into a spaced path");
+            Require(File.ReadAllText(Path.Combine(a, "Library.step")) == "HEADER;\nENDSEC;\n", "clone preserves repository line endings despite Windows Git defaults");
             var network = runner.Commands.Single(c => c.Arguments.Contains("clone"));
             string encoded = Convert.ToBase64String(Encoding.UTF8.GetBytes("token:" + Token));
             Require(!string.Join(" ", network.Arguments).Contains(Token) && !string.Join(" ", network.Arguments).Contains(encoded), "credentials stay out of process arguments");
@@ -71,6 +73,31 @@ internal static class Program
             Require((await new ProcessGitRunner(Environment.GetEnvironmentVariable("ALTIUM17365_TEST_GIT")).RunAsync(effective, None)).Output.Trim() == "true", "repository-scoped TLS verification overrides an insecure local setting");
             await Plain(a, "config", "--unset", "http." + Remote + ".sslVerify");
             Require(!File.ReadAllText(Path.Combine(a, ".git", "config")).Contains(encoded), "clone stores no authorization header in Git config");
+
+            var staleGit = new WorkspaceGit(new StaleStatusRunner(new LocalRemoteRunner(bare)));
+            Require((await staleGit.StatusAsync(Remote, a, None)).Changes.Count == 0, "stale stat metadata does not report unchanged worktree files as edits");
+            File.WriteAllText(Path.Combine(a, "Board.PrjPcb"), "staged revision"); await Plain(a, "add", "Board.PrjPcb");
+            Require((await staleGit.StatusAsync(Remote, a, None)).Changes.Single().Status == "M ", "content verification preserves staged changes while clearing a false worktree flag");
+            await Plain(a, "reset", "HEAD", "--", "Board.PrjPcb");
+            Require((await staleGit.StatusAsync(Remote, a, None)).Changes.Single().Status == " M", "content verification retains real unstaged changes");
+            File.WriteAllText(Path.Combine(a, "Board.PrjPcb"), "test project source");
+
+            File.WriteAllText(Path.Combine(a, "Board.PrjPcb"), "uncommitted cache edit");
+            File.WriteAllText(Path.Combine(seed, "FromServer.txt"), "new remote revision");
+            await Plain(seed, "add", "--all"); await Plain(seed, "commit", "-m", "New remote revision"); await Plain(seed, "push", "origin", "master");
+            var cachedGit = new WorkspaceGit(new LocalRemoteRunner(bare));
+            string cached = Path.Combine(root, "cached copy");
+            await cachedGit.CloneAsync(Remote, cached, Token, a, None);
+            Require(File.ReadAllText(Path.Combine(cached, "FromServer.txt")) == "new remote revision" &&
+                File.ReadAllText(Path.Combine(cached, "Board.PrjPcb")) == "test project source", "cached clone fetches the current remote revision rather than copying local edits");
+            Require(File.ReadAllText(Path.Combine(a, "Board.PrjPcb")) == "uncommitted cache edit", "cached clone preserves the reference checkout's unsaved work");
+            Directory.Move(a, a + " moved");
+            Require(!File.Exists(Path.Combine(cached, ".git", "objects", "info", "alternates")) &&
+                (await Plain(cached, "rev-list", "--count", "HEAD")).Output.Trim() == "2", "cached clone retains full history independently of the reference checkout");
+            Directory.Move(a + " moved", a);
+            File.WriteAllText(Path.Combine(a, "Board.PrjPcb"), "test project source");
+            await git.PullAsync(Remote, a, Token, None);
+            await Reject(() => cachedGit.CloneAsync("https://other.365.altium.com/project.git", Path.Combine(root, "wrong cache"), Token, a, None), "rejects a cache belonging to another project", "same Altium 365 repository");
 
             string selected = "new part ü.txt", unrelated = "unrelated.txt";
             File.WriteAllText(Path.Combine(a, selected), "selected"); File.WriteAllText(Path.Combine(a, unrelated), "leave staged");
@@ -122,6 +149,7 @@ internal static class Program
 
             var failure = new WorkspaceGit(new FailureRunner());
             await Reject(() => failure.CloneAsync(Remote, Path.Combine(root, "failed clone"), Token, None), "Git server errors do not expose tokens or response bodies", "authentication failed");
+            Require(!Directory.Exists(Path.Combine(root, "failed clone")), "failed access check leaves no partial clone folder");
             await Reject(() => git.CloneAsync(Remote, Path.Combine(root, "no token"), "", None), "network operations require a token", "access token");
             var sleep = new GitCommand { WorkingDirectory = root };
             string self = Process.GetCurrentProcess().MainModule.FileName;
@@ -209,7 +237,7 @@ internal static class Program
             mapped.Arguments.AddRange(original.Arguments); foreach (var pair in original.Environment) mapped.Environment[pair.Key] = pair.Value;
             string verb = original.Arguments[2];
             if (verb == "push" && FailNextPush) { FailNextPush = false; return new GitResult { ExitCode = 128, Error = "Authentication failed: private-server-body " + Token }; }
-            if (verb == "clone") { NetworkCalls++; mapped.Arguments[mapped.Arguments.IndexOf(Remote)] = bare; }
+            if (verb == "clone" || verb == "ls-remote") { NetworkCalls++; mapped.Arguments[mapped.Arguments.IndexOf(Remote)] = bare; }
             if (verb == "pull" || verb == "push") { NetworkCalls++; mapped.Arguments[mapped.Arguments.IndexOf("origin")] = bare; }
             var result = await process.RunAsync(mapped, cancellation);
             if (verb == "commit" && result.ExitCode == 0 && SwitchRemoteAfterCommit)
@@ -218,6 +246,22 @@ internal static class Program
             // URL substitution bypasses Git's usual origin tracking-ref update; model the named remote after successful transport.
             if ((verb == "push" || verb == "pull") && result.ExitCode == 0)
                 await Plain(original.WorkingDirectory, "update-ref", "refs/remotes/origin/master", (await Plain(original.WorkingDirectory, "rev-parse", "HEAD")).Output.Trim());
+            return result;
+        }
+    }
+    sealed class StaleStatusRunner : IGitRunner
+    {
+        readonly IGitRunner inner;
+        internal StaleStatusRunner(IGitRunner inner) { this.inner = inner; }
+        public async Task<GitResult> RunAsync(GitCommand command, CancellationToken cancellation)
+        {
+            var result = await inner.RunAsync(command, cancellation);
+            if (result.ExitCode != 0 || !command.Arguments.Contains("status")) return result;
+            var records = result.Output.Split('\0').Where(r => r.Length > 0).ToList();
+            int row = records.FindIndex(r => r.Length > 3 && r.Substring(3) == "Board.PrjPcb");
+            if (row < 0) records.Add(" M Board.PrjPcb");
+            else records[row] = records[row][0] + "M " + "Board.PrjPcb";
+            result.Output = string.Join("\0", records) + "\0";
             return result;
         }
     }

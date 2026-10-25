@@ -10,7 +10,7 @@ namespace Altium17Cloud
 {
     public sealed class WorkspaceAuthenticationException : InvalidOperationException
     {
-        public WorkspaceAuthenticationException() : base("Altium sign-in failed. Check your registered client ID and complete browser sign-in.") { }
+        public WorkspaceAuthenticationException() : base("Altium sign-in failed. Complete browser sign-in and try again.") { }
     }
     public sealed class WorkspaceSession
     {
@@ -19,6 +19,8 @@ namespace Altium17Cloud
         private AltiumAuthClient globalAuth, workspaceAuth;
         private TokenSet globalToken, workspaceToken;
         private string clientId;
+        // Public PKCE client used by Altium's open-source Developer extension.
+        public const string DefaultClientId = "4BA91DBF-BF57-4B0C-8D67-5E76CEC51A9D";
         public Workspace Connected { get; private set; }
         public bool SignedIn => globalToken != null;
         public WorkspaceSession(WorkspaceApi api, HttpClient authHttp) { this.api = api ?? throw new ArgumentNullException(nameof(api)); this.authHttp = authHttp ?? throw new ArgumentNullException(nameof(authHttp)); }
@@ -35,9 +37,13 @@ namespace Altium17Cloud
             if (string.IsNullOrWhiteSpace(token.AccessToken)) throw new InvalidOperationException("Sign-in returned no access token.");
             var workspaces = await api.DiscoverAsync(region, token.AccessToken, cancellation).ConfigureAwait(false);
             cancellation.ThrowIfCancellationRequested();
+            // A successful account switch must not keep the previous identity's workspace token.
+            Disconnect();
             globalAuth = auth; globalToken = token; clientId = id.Trim();
             return workspaces;
         }
+        public Task<List<Workspace>> SignInAsync(string region, Action<string> browser, CancellationToken cancellation) =>
+            SignInAsync(DefaultClientId, region, browser, cancellation);
         public async Task<ProjectPage> ConnectAsync(Workspace workspace, string suppliedToken, CancellationToken cancellation)
         {
             if (workspace == null) throw new ArgumentException("Choose a workspace first.");
@@ -56,7 +62,7 @@ namespace Altium17Cloud
                 token = await Authenticate(() => auth.SignIntoWorkspaceAsync(globalToken.AccessToken, workspace.Id, cancellation)).ConfigureAwait(false);
             }
             if (suppliedToken == null && string.IsNullOrWhiteSpace(token.AccessToken)) throw new WorkspaceAuthenticationException();
-            var page = await api.ProjectsAsync(workspace.Url, token.AccessToken, null, cancellation).ConfigureAwait(false);
+            var page = await api.ProjectsAsync(workspace, token.AccessToken, null, cancellation).ConfigureAwait(false);
             cancellation.ThrowIfCancellationRequested();
             // Commit a new connection only after a successful authenticated query.
             Connected = workspace; workspaceToken = token; workspaceAuth = auth;
@@ -65,7 +71,24 @@ namespace Altium17Cloud
         public async Task<ProjectPage> ProjectsAsync(string cursor, CancellationToken cancellation)
         {
             var token = await AccessTokenAsync(cancellation).ConfigureAwait(false);
-            return await api.ProjectsAsync(Connected.Url, token, cursor, cancellation).ConfigureAwait(false);
+            return await api.ProjectsAsync(Connected, token, cursor, cancellation).ConfigureAwait(false);
+        }
+        public async Task<List<CloudProject>> AllProjectsAsync(ProjectPage first, IProgress<int> progress, CancellationToken cancellation)
+        {
+            var result = new List<CloudProject>();
+            var ids = new HashSet<string>(StringComparer.Ordinal);
+            var cursors = new HashSet<string>(StringComparer.Ordinal);
+            var page = first ?? await ProjectsAsync(null, cancellation).ConfigureAwait(false);
+            while (true)
+            {
+                cancellation.ThrowIfCancellationRequested();
+                foreach (var project in page.Projects) if (ids.Add(project.Id)) result.Add(project);
+                progress?.Report(result.Count);
+                if (!page.HasNext) return result;
+                if (string.IsNullOrWhiteSpace(page.Cursor) || !cursors.Add(page.Cursor))
+                    throw new InvalidOperationException("The workspace returned a repeated project page. Refresh the project list.");
+                page = await ProjectsAsync(page.Cursor, cancellation).ConfigureAwait(false);
+            }
         }
         public async Task<string> AccessTokenAsync(CancellationToken cancellation)
         {
@@ -73,7 +96,8 @@ namespace Altium17Cloud
             if (Connected == null || workspaceToken == null) throw new InvalidOperationException("Connect to a workspace first.");
             if (workspaceToken.ExpiresAt.HasValue && workspaceToken.ExpiresAt <= DateTimeOffset.UtcNow.ToUnixTimeSeconds())
             {
-                if (workspaceAuth == null || string.IsNullOrWhiteSpace(workspaceToken.RefreshToken)) throw new InvalidOperationException("Workspace sign-in expired. Connect again.");
+                if (workspaceAuth == null || string.IsNullOrWhiteSpace(workspaceToken.RefreshToken))
+                    throw new InvalidOperationException("Workspace sign-in expired. Connect again.");
                 workspaceToken = await Refresh(workspaceAuth, workspaceToken, cancellation).ConfigureAwait(false);
             }
             return workspaceToken.AccessToken;
