@@ -35,6 +35,7 @@ namespace Altium17Cloud
         private readonly ComboBox workspaces = new ComboBox { DisplayMemberPath = "Name", MinWidth = 180 };
         private readonly ComboBox region = new ComboBox { ItemsSource = WorkspaceApi.Regions, DisplayMemberPath = "Key", SelectedValuePath = "Value", SelectedIndex = 0 };
         private readonly TextBlock connection = Label("Not signed in"), status = Label("Connect to browse your workspace projects.");
+        private readonly TextBlock workspaceStatus = Label("Status: Disconnected");
         private readonly Button cancel = Button("Cancel"), signIn = Button("Sign in"), connect = Button("Connect"), refresh = Button("Refresh"), logout = Button("Log out"), open = Button("Open workspace");
         private readonly TabControl tabs = new TabControl();
         private readonly CheckBox followProject = new CheckBox { Content = "Synchronize with server", ToolTip = "Detect the open project's Altium 365 working copy automatically. Choose Save to Server to upload changes.", IsChecked = true, Margin = new Thickness(0, 4, 0, 6) };
@@ -84,6 +85,9 @@ namespace Altium17Cloud
         private GitStatus workingStatus;
         private readonly List<Control> busyControls = new List<Control>();
         private readonly string settingsPath;
+        private readonly SignInStore signInStore;
+        private bool signInRestoreStarted;
+        private bool reconnectOnStartup = true;
         private CancellationTokenSource operation;
         private bool disposed;
         private static HttpClient CreateHttp(TimeSpan timeout) => new HttpClient(new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false, SslProtocols = SslProtocols.Tls12 }) { Timeout = timeout };
@@ -94,6 +98,7 @@ namespace Altium17Cloud
             this.openProjectAction = openProjectAction;
             this.documents = documents;
             this.settingsPath = settingsPath ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Altium17365", "settings.json");
+            signInStore = new SignInStore(Path.Combine(Path.GetDirectoryName(this.settingsPath), "sign-in.dat"));
             session = new WorkspaceSession(new WorkspaceApi(apiHttp), authHttp);
             projectView = CollectionViewSource.GetDefaultView(projects);
             projectView.Filter = item => item is CloudProject project && projectTerms.All(term =>
@@ -105,7 +110,7 @@ namespace Altium17Cloud
             var header = new DockPanel();
             DockPanel.SetDock(logout, Dock.Right); header.Children.Add(logout); header.Children.Add(connection);
             DockPanel.SetDock(header, Dock.Top); layout.Children.Add(header);
-            logout.Click += (_, __) => LogOut();
+            logout.Click += async (_, __) => await RunAsync(_ => { Disconnect(true); return Task.CompletedTask; }, "Logging out…", needsWorkingCopy: false);
             var footer = new StackPanel(); footer.Children.Add(fetchNotice); footer.Children.Add(status); footer.Children.Add(cancel);
             DockPanel.SetDock(footer, Dock.Bottom); layout.Children.Add(footer);
             layout.Children.Add(tabs); Content = layout;
@@ -125,26 +130,32 @@ namespace Altium17Cloud
                 if (!monitoring) { monitorTask = MonitorAsync(); await monitorTask; }
             };
             monitorTimer.Start();
+            Loaded += async (_, __) => await RestoreSignInAsync();
         }
         private UIElement BuildConnection()
         {
             var stack = new StackPanel { Margin = new Thickness(10) };
             stack.Children.Add(Label("Sign in to Altium 365 in your browser, then choose a workspace."));
             stack.Children.Add(signIn);
-            stack.Children.Add(Label("Workspace")); stack.Children.Add(workspaces); stack.Children.Add(connect);
-            stack.Children.Add(Label("Your session stays in memory until you log out or close Altium."));
+            stack.Children.Add(Label("Workspace")); stack.Children.Add(workspaces); stack.Children.Add(workspaceStatus); stack.Children.Add(connect);
             workspaces.SelectionChanged += (_, __) => UpdateState();
             signIn.Click += async (_, __) => await RunAsync(async ct =>
             {
                 var available = await session.SignInAsync((string)region.SelectedValue, OpenBrowser, ct);
+                RememberSignIn();
                 projects.Clear(); UpdateProjectCount(); gitProject = null; gitWorkspace = null; gitToken.Clear(); accessToken.Clear();
                 workspaces.ItemsSource = available;
                 var selected = available.FirstOrDefault(w => w.Url.AbsoluteUri == workspaceUrl.Text) ?? (available.Count == 1 ? available[0] : null);
                 workspaces.SelectedItem = selected;
                 if (selected != null) await ConnectWorkspaceAsync(selected, ct);
                 else status.Text = available.Count == 0 ? "No workspaces available for this account." : "Choose a workspace and connect.";
-            }, "Complete sign-in in your browser…");
-            connect.Click += async (_, __) => await RunAsync(ct => ConnectWorkspaceAsync((Workspace)workspaces.SelectedItem, ct), "Connecting to workspace…");
+            }, "Complete sign-in in your browser…", needsWorkingCopy: false);
+            connect.Click += async (_, __) =>
+            {
+                if (session.Connected != null)
+                    await RunAsync(_ => { Disconnect(false); return Task.CompletedTask; }, "Disconnecting…", needsWorkingCopy: false);
+                else await RunAsync(ct => ConnectWorkspaceAsync((Workspace)workspaces.SelectedItem, ct), "Connecting to workspace…", needsWorkingCopy: false);
+            };
             var advanced = new StackPanel();
             advanced.Children.Add(Label("Discovery region")); advanced.Children.Add(region);
             advanced.Children.Add(Label("Workspace address")); advanced.Children.Add(workspaceUrl);
@@ -155,8 +166,10 @@ namespace Altium17Cloud
                 var url = WorkspaceApi.WorkspaceUrl(workspaceUrl.Text);
                 string token = accessToken.Password; accessToken.Clear();
                 var page = await session.ConnectAsync(new Workspace { Name = url.Host.Split('.')[0], Url = url }, token, ct);
+                reconnectOnStartup = true;
+                UpdateState();
                 tabs.SelectedIndex = 1; await ShowProjectsAsync(page, ct);
-            }, "Connecting to workspace…");
+            }, "Connecting to workspace…", needsWorkingCopy: false);
             stack.Children.Add(new Expander { Header = "Advanced connection", Content = advanced, Margin = new Thickness(0, 18, 0, 0) });
             busyControls.AddRange(new Control[] { signIn, workspaces, region, workspaceUrl, accessToken, tokenConnect });
             return new ScrollViewer { Content = stack, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
@@ -165,10 +178,39 @@ namespace Altium17Cloud
         {
             status.Text = "Connecting to workspace…";
             var page = await session.ConnectAsync(workspace, null, cancellation);
+            reconnectOnStartup = true;
             workspaceUrl.Text = session.Connected.Url.AbsoluteUri;
+            RememberSignIn(); SaveSettings();
+            UpdateState();
             tabs.SelectedIndex = 1;
             await ShowProjectsAsync(page, cancellation);
             if (followProject.IsChecked == true && monitorFolder != null) tabs.SelectedIndex = 2;
+        }
+        private async Task RestoreSignInAsync()
+        {
+            if (signInRestoreStarted || disposed || session.SignedIn || IsBusy) return;
+            signInRestoreStarted = true;
+            var saved = signInStore.Read();
+            if (saved == null) return;
+            reconnectOnStartup = saved.ConnectOnStartup;
+            await RunAsync(async ct =>
+            {
+                region.SelectedValue = saved.Region;
+                var available = await session.ResumeAsync(saved.RefreshToken, saved.Region, ct);
+                RememberSignIn();
+                workspaces.ItemsSource = available;
+                var selected = available.FirstOrDefault(w => w.Url.AbsoluteUri == workspaceUrl.Text) ?? (available.Count == 1 ? available[0] : null);
+                workspaces.SelectedItem = selected;
+                if (saved.ConnectOnStartup && selected != null) await ConnectWorkspaceAsync(selected, ct);
+                else status.Text = "Signed in. Choose a workspace and connect.";
+            }, "Signing in…", needsWorkingCopy: false);
+        }
+        private void RememberSignIn()
+        {
+            if (string.IsNullOrWhiteSpace(session.SignInRefreshToken)) return;
+            try { signInStore.Save(new SavedSignIn { RefreshToken = session.SignInRefreshToken, Region = (string)region.SelectedValue, ConnectOnStartup = reconnectOnStartup }); }
+            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException || e is System.Security.Cryptography.CryptographicException)
+            { status.Text = "Sign-in could not be remembered on this computer."; }
         }
         private UIElement BuildProjects()
         {
@@ -355,12 +397,15 @@ namespace Altium17Cloud
             return layout;
         }
         private WorkspaceGit Git() => new WorkspaceGit(new ProcessGitRunner(gitExecutable.Text));
-        private void LogOut()
+        private void Disconnect(bool logOut)
         {
+            reconnectOnStartup = logOut;
             monitorCancellation?.Cancel(); fetchSchedule.Clear(); serverNotices.Clear(); fetchWarnings.Clear(); fetchErrors.Clear(); fetchScanError = null; lastFetchScan = lastFetchCompleted = DateTime.MinValue;
-            session.Disconnect(); accessToken.Clear(); gitToken.Clear(); gitProject = null; gitWorkspace = null; workspaces.ItemsSource = null;
+            if (logOut) { signInStore.Clear(); session.Disconnect(); workspaces.ItemsSource = null; }
+            else session.DisconnectWorkspace();
+            accessToken.Clear(); gitToken.Clear(); gitProject = null; gitWorkspace = null;
             projects.Clear(); projectSearch.Clear(); ApplyProjectFilter(); tabs.SelectedIndex = 0;
-            status.Text = "Logged out. Session and Git credentials cleared."; UpdateState();
+            status.Text = logOut ? "Logged out." : "Disconnected."; UpdateState();
             fetchNotice.Text = "Background fetch resumes when connected.";
         }
         private async Task<string> GitTokenAsync(CancellationToken cancellation)
@@ -694,10 +739,10 @@ namespace Altium17Cloud
             UpdateProjectCount();
             status.Text = projects.Count + (projects.Count == 1 ? " project loaded." : " projects loaded.");
         }
-        private async Task RunAsync(Func<CancellationToken, Task> action, string message, TimeSpan? timeout = null)
+        private async Task RunAsync(Func<CancellationToken, Task> action, string message, TimeSpan? timeout = null, bool needsWorkingCopy = true)
         {
             if (disposed || operation != null) return;
-            DetectActiveProject();
+            if (needsWorkingCopy) DetectActiveProject();
             var pending = new CancellationTokenSource(timeout ?? TimeSpan.FromMinutes(5));
             operation = pending; status.Text = message; UpdateState();
             try
@@ -706,8 +751,11 @@ namespace Altium17Cloud
                 if (monitoring) { monitorCancellation?.Cancel(); if (monitorTask != null) await monitorTask; }
                 pending.Token.ThrowIfCancellationRequested();
                 if (disposed) return;
-                await FollowActiveProjectAsync(pending.Token);
-                if (contextPending) throw new InvalidOperationException("Wait for the active project's working copy to be detected.");
+                if (needsWorkingCopy)
+                {
+                    await FollowActiveProjectAsync(pending.Token);
+                    if (contextPending) throw new InvalidOperationException("Wait for the active project's working copy to be detected.");
+                }
                 pending.Token.ThrowIfCancellationRequested();
                 await action(pending.Token);
             }
@@ -716,7 +764,7 @@ namespace Altium17Cloud
             {
                 if (!disposed) status.Text = FriendlyError(error);
             }
-            finally { operation = null; pending.Dispose(); if (!disposed) { SaveSettings(); UpdateState(); } }
+            finally { operation = null; pending.Dispose(); if (!disposed) { SaveSettings(); RememberSignIn(); UpdateState(); } }
         }
         internal static string FriendlyError(Exception error)
         {
@@ -730,10 +778,15 @@ namespace Altium17Cloud
         private void UpdateState()
         {
             bool busy = IsBusy || contextPending;
+            bool connected = session.Connected != null;
             foreach (var control in busyControls) control.IsEnabled = !busy;
             followProject.IsEnabled = !IsBusy;
             cancel.Visibility = IsBusy ? Visibility.Visible : Visibility.Collapsed;
-            connect.IsEnabled = !busy && session.SignedIn && workspaces.SelectedItem is Workspace;
+            connect.Content = connected ? "Disconnect" : "Connect";
+            connect.IsEnabled = !IsBusy && (connected || session.SignedIn && workspaces.SelectedItem is Workspace);
+            workspaces.IsEnabled = !IsBusy && !connected;
+            workspaceStatus.Text = connected ? "Status: Connected" : "Status: Disconnected";
+            workspaceStatus.Foreground = connected ? Brushes.DarkGreen : Brushes.DimGray;
             logout.IsEnabled = !busy && (session.SignedIn || session.Connected != null || gitToken.Password.Length > 0 || accessToken.Password.Length > 0);
             createProject.IsEnabled = refresh.IsEnabled = open.IsEnabled = !busy && session.Connected != null;
             useProject.IsEnabled = !busy && session.Connected != null && projectGrid?.SelectedItem is CloudProject project && projectView.Contains(project) && !string.IsNullOrEmpty(project.RepositoryUrl);
@@ -777,11 +830,12 @@ namespace Altium17Cloud
                 Directory.CreateDirectory(Path.GetDirectoryName(settingsPath));
                 File.WriteAllText(settingsPath, JsonConvert.SerializeObject(new Dictionary<string, string> { ["workspaceUrl"] = workspaceUrl.Text, ["region"] = (string)region.SelectedValue, ["gitRemote"] = gitRemote.Text, ["gitFolder"] = gitFolder.Text, ["gitExecutable"] = gitExecutable.Text, ["gitReference"] = gitReference.Text, ["followActiveProject"] = (followProject.IsChecked == true).ToString() }));
             }
-            catch { /* Preferences are optional; credentials are never persisted. */ }
+            catch { /* Preferences are optional. */ }
         }
         public void Dispose()
         {
             if (disposed) return;
+            RememberSignIn();
             disposed = true; operation?.Cancel(); accessToken.Clear(); gitToken.Clear(); session.Disconnect();
             searchTimer.Stop(); monitorTimer.Stop(); monitorCancellation?.Cancel(); watcher?.Dispose(); watcher = null;
             apiHttp.Dispose(); authHttp.Dispose();

@@ -23,6 +23,7 @@ namespace Altium17Cloud
         public const string DefaultClientId = "4BA91DBF-BF57-4B0C-8D67-5E76CEC51A9D";
         public Workspace Connected { get; private set; }
         public bool SignedIn => globalToken != null;
+        public string SignInRefreshToken => globalToken?.RefreshToken;
         public WorkspaceSession(WorkspaceApi api, HttpClient authHttp) { this.api = api ?? throw new ArgumentNullException(nameof(api)); this.authHttp = authHttp ?? throw new ArgumentNullException(nameof(authHttp)); }
         private AltiumAuthClient Auth(string id, Action<string> browser, bool gov = false) => new AltiumAuthClient(authHttp, new AltiumAuthOptions {
             ClientId = id, Scopes = "openid profile offline_access", OpenBrowser = browser,
@@ -44,6 +45,17 @@ namespace Altium17Cloud
         }
         public Task<List<Workspace>> SignInAsync(string region, Action<string> browser, CancellationToken cancellation) =>
             SignInAsync(DefaultClientId, region, browser, cancellation);
+        public async Task<List<Workspace>> ResumeAsync(string refreshToken, string region, CancellationToken cancellation)
+        {
+            if (string.IsNullOrWhiteSpace(refreshToken)) throw new ArgumentException("Sign in to reconnect.");
+            if (!WorkspaceApi.Regions.Any(r => r.Value == region)) throw new ArgumentException("Select an Altium 365 region.");
+            var auth = Auth(DefaultClientId, null);
+            var token = await Refresh(auth, new TokenSet { RefreshToken = refreshToken }, cancellation).ConfigureAwait(false);
+            // Retain a rotated refresh token even if subsequent workspace discovery is unavailable.
+            Disconnect();
+            globalAuth = auth; globalToken = token; clientId = DefaultClientId;
+            return await api.DiscoverAsync(region, token.AccessToken, cancellation).ConfigureAwait(false);
+        }
         public async Task<ProjectPage> ConnectAsync(Workspace workspace, string suppliedToken, CancellationToken cancellation)
         {
             if (workspace == null) throw new ArgumentException("Choose a workspace first.");
@@ -124,6 +136,7 @@ namespace Altium17Cloud
             if (string.IsNullOrWhiteSpace(token.RefreshToken)) token.RefreshToken = previous.RefreshToken;
             return token;
         }
-        public void Disconnect() { Connected = null; globalToken = workspaceToken = null; globalAuth = workspaceAuth = null; clientId = null; }
+        public void DisconnectWorkspace() { Connected = null; workspaceToken = null; workspaceAuth = null; }
+        public void Disconnect() { DisconnectWorkspace(); globalToken = null; globalAuth = null; clientId = null; }
     }
 }

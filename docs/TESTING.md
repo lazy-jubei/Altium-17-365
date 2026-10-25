@@ -1,5 +1,13 @@
 # Verification
 
+## v0.7.0 connection controls and remembered sign-in
+
+25 October 2026:
+
+- The Connection tab shows **Status: Connected** immediately above **Disconnect**, switching to **Status: Disconnected** and **Connect** when disconnected. Disconnect retains browser sign-in; Log out clears it. The session-storage explanation has been removed from the GUI.
+- Browser refresh credentials use per-user DPAPI encryption and atomic replacement. Access tokens and manually supplied API tokens remain in memory. Saved sign-in is restored on startup, while an explicit disconnect keeps automatic workspace connection disabled.
+- All 112 workspace/authentication checks, 31 actual-view checks and 10 saved-sign-in checks pass. Tests include refresh-token rotation, retaining rotated credentials after discovery failures, reconnecting without browser sign-in, ciphertext tampering, logout deletion, and reading the credential from a second process under Wine.
+
 ## v0.6.1 bundled Git
 
 25 October 2026:

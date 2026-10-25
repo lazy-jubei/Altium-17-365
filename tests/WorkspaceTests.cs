@@ -128,6 +128,35 @@ internal static class Program
             Require(flow.Forms.Exists(form => form.Contains("refresh_token=workspace-refresh")), "refreshes workspace token using its own issuing client");
             Require(session.Connected == workspaces[0], "OAuth workspace query establishes connection");
         }
+        var resumeAuth = new AuthHandler(); var resumeApi = new FakeHandler();
+        using (var auth = new HttpClient(resumeAuth))
+        using (var http = new HttpClient(resumeApi))
+        {
+            var session = new WorkspaceSession(new WorkspaceApi(http), auth);
+            await Reject(() => session.ResumeAsync("", WorkspaceApi.Regions[0].Value, none), "resume requires a saved credential");
+            await Reject(() => session.ResumeAsync("fixture", "https://attacker.test", none), "resume rejects untrusted regions before authentication");
+            resumeAuth.Tokens.Enqueue("{\"access_token\":\"resumed-global\",\"refresh_token\":\"rotated-global\",\"expires_in\":3600}");
+            resumeApi.Responses.Enqueue(Reply("{\"data\":{\"desWorkspaceInfos\":[{\"authId\":\"id-1\",\"name\":\"Board\",\"url\":\"https://board.365.altium.com\"}]}}"));
+            var workspaces = await session.ResumeAsync("saved-refresh", WorkspaceApi.Regions[0].Value, none);
+            Require(session.SignedIn && session.SignInRefreshToken == "rotated-global" && workspaces.Count == 1, "saved sign-in refreshes and exports the rotated credential");
+            Require(resumeAuth.Forms.Count == 1 && resumeAuth.Forms[0].Contains("grant_type=refresh_token") && resumeAuth.Forms[0].Contains("refresh_token=saved-refresh"), "resume uses refresh authentication without opening a browser");
+            resumeAuth.Tokens.Enqueue("{\"access_token\":\"resumed-workspace\",\"expires_in\":3600}"); resumeApi.Responses.Enqueue(Reply(Page()));
+            await session.ConnectAsync(workspaces[0], null, none);
+            session.DisconnectWorkspace();
+            Require(session.Connected == null && session.SignedIn && session.SignInRefreshToken == "rotated-global", "workspace disconnect retains the remembered account");
+            await Reject(() => session.AccessTokenAsync(none), "disconnected workspace tokens cannot be reused");
+            resumeAuth.Tokens.Enqueue("{\"access_token\":\"reconnected-workspace\",\"expires_in\":3600}"); resumeApi.Responses.Enqueue(Reply(Page()));
+            await session.ConnectAsync(workspaces[0], null, none);
+            Require(session.Connected == workspaces[0] && await session.AccessTokenAsync(none) == "reconnected-workspace", "reconnect exchanges a fresh workspace token without signing in again");
+            session.Disconnect();
+            Require(!session.SignedIn && session.SignInRefreshToken == null, "full logout clears the account and exportable credential");
+            resumeAuth.Tokens.Enqueue("{\"access_token\":\"new-global\",\"refresh_token\":\"new-rotation\",\"expires_in\":3600}");
+            resumeApi.Responses.Enqueue(Reply("temporary failure", HttpStatusCode.ServiceUnavailable));
+            await Reject(() => session.ResumeAsync("rotated-global", WorkspaceApi.Regions[0].Value, none), "workspace discovery failure is reported after refresh");
+            Require(session.SignedIn && session.SignInRefreshToken == "new-rotation", "discovery failures retain rotated credentials for the next restart");
+            resumeAuth.Tokens.Enqueue("{\"error\":\"invalid_grant\",\"error_description\":\"private-server-body\"}");
+            await Reject(() => session.ResumeAsync("expired-fixture", WorkspaceApi.Regions[0].Value, none), "invalid saved credentials produce a safe sign-in error", "sign-in failed");
+        }
         using (var http = new HttpClient(new Pages()))
         using (var auth = new HttpClient())
         {

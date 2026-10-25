@@ -27,6 +27,8 @@ jobs:
       - run: ./tests/bin/SyncDialogTests/Debug/net48/SyncDialogTests.exe
       - run: dotnet build tests/ProjectContextTests.csproj
       - run: ./tests/bin/ProjectContextTests/Debug/net48/ProjectContextTests.exe
+      - run: dotnet build tests/SignInStoreTests.csproj
+      - run: ./tests/bin/SignInStoreTests/Debug/net48/SignInStoreTests.exe
       - run: dotnet build tests/GitResponsiveness.csproj
       - run: ./tests/bin/GitResponsiveness/Debug/net48/GitResponsiveness.exe
       - run: dotnet msbuild Installer/Installer.csproj -target:PreparePortableGit

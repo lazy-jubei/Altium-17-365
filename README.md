@@ -3,7 +3,7 @@
 A dockable Altium 365 panel for Altium Designer 17.
 
 - Detects the active project's Altium 365 working copy automatically.
-- Browser sign-in, project creation/search, token refresh and logout.
+- Remembered sign-in, project creation/search, token refresh and logout.
 - Pull/push changes with Local or Server choices for conflicting files. **Save to Server** combines commit and push.
 - Background fetch for open projects every two minutes; cancellable Git processes.
 
@@ -11,11 +11,11 @@ A dockable Altium 365 panel for Altium Designer 17.
 
 ## Install
 
-Download [v0.6.1 setup](https://github.com/lazy-jubei/Altium-17-365/releases/download/v0.6.1/Altium-17-365-Setup.exe). Close AD17, run the installer and restart. Includes portable Git; no separate Git installation is needed. Requires .NET Framework 4.8.
+Download [v0.7.0 setup](https://github.com/lazy-jubei/Altium-17-365/releases/download/v0.7.0/Altium-17-365-Setup.exe). Close AD17, run the installer and restart. Includes portable Git; no separate Git installation is needed. Requires .NET Framework 4.8.
 
 ## Connect
 
-Open **System → Altium 365 (AD17)**, choose **Sign in**, then select your workspace. **Log out** in the header clears the session and Git credentials. Sessions stay in memory; addresses and Git preferences are saved locally.
+Open **System → Altium 365 (AD17)**, choose **Sign in**, then select your workspace. Sign-in is remembered across restarts. **Disconnect** keeps it available for reconnecting; **Log out** forgets it.
 
 Open an existing Altium 365 project in AD17; **Synchronize with server** detects it automatically. For a new clone, choose **Projects → Use selected project**, then **Manual setup**. [Git workflow](docs/GIT.md).
 

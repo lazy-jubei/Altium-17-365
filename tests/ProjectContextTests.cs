@@ -43,9 +43,35 @@ static class Program
         Field<DispatcherTimer>(view, "monitorTimer").Stop(); return view;
     }
     static Task Follow(WorkspaceView view) => (Task)Call(view, "FollowActiveProjectAsync", CancellationToken.None);
-    static Task Run(WorkspaceView view, Func<CancellationToken, Task> action) => (Task)Call(view, "RunAsync", action, "Test operation", null);
+    static Task Run(WorkspaceView view, Func<CancellationToken, Task> action) => (Task)Call(view, "RunAsync", action, "Test operation", null, true);
     static async Task Checks(string root)
     {
+        using (var view = View(new WorkspaceDocuments(), Path.Combine(root, "connection", "settings.json")))
+        {
+            var state = Field<TextBlock>(view, "workspaceStatus"); var toggle = Field<Button>(view, "connect");
+            var panel = (Panel)state.Parent;
+            Require(state.Text == "Status: Disconnected" && (string)toggle.Content == "Connect" && !toggle.IsEnabled, "initial status and Connect button agree before sign-in");
+            Require(panel.Children.IndexOf(state) + 1 == panel.Children.IndexOf(toggle) && !panel.Children.OfType<TextBlock>().Any(t => t.Text.Contains("session stays in memory")), "connection status sits immediately above the button without implementation details");
+            var session = Field<WorkspaceSession>(view, "session");
+            var workspace = new Workspace { Name = "Test", Url = WorkspaceApi.WorkspaceUrl("test.365.altium.com") };
+            Set(session, "globalToken", new Altium.Auth.TokenSet { AccessToken = "fixture-access", RefreshToken = "fixture-refresh" });
+            Set(session, "<Connected>k__BackingField", workspace);
+            var picker = Field<ComboBox>(view, "workspaces"); picker.ItemsSource = new[] { workspace }; picker.SelectedItem = workspace;
+            Call(view, "UpdateState");
+            Require(state.Text == "Status: Connected" && (string)toggle.Content == "Disconnect" && toggle.IsEnabled && !picker.IsEnabled, "a connected workspace shows Disconnect and keeps the connected workspace selected");
+            Set(session, "<Connected>k__BackingField", null); Call(view, "RememberSignIn");
+            Require(Field<SignInStore>(view, "signInStore").Read()?.ConnectOnStartup == true, "temporary connection failures retain the automatic reconnect preference");
+            Set(session, "<Connected>k__BackingField", workspace); Call(view, "UpdateState");
+            toggle.RaiseEvent(new System.Windows.RoutedEventArgs(Button.ClickEvent));
+            Require(session.Connected == null && session.SignedIn && state.Text == "Status: Disconnected" && (string)toggle.Content == "Connect" && toggle.IsEnabled, "Disconnect clears the workspace while preserving sign-in for reconnecting");
+            Require(Field<SignInStore>(view, "signInStore").Read()?.ConnectOnStartup == false && picker.SelectedItem == workspace, "disconnect is remembered without forgetting the selected workspace");
+            Field<Button>(view, "logout").RaiseEvent(new System.Windows.RoutedEventArgs(Button.ClickEvent));
+            Require(!session.SignedIn && Field<SignInStore>(view, "signInStore").Read() == null && !toggle.IsEnabled, "Log out clears remembered sign-in and disables Connect");
+            Set(session, "<Connected>k__BackingField", workspace); Call(view, "UpdateState");
+            Require((string)toggle.Content == "Disconnect" && toggle.IsEnabled, "token-only connections can also disconnect without browser sign-in");
+            toggle.RaiseEvent(new System.Windows.RoutedEventArgs(Button.ClickEvent));
+            Require(session.Connected == null && (string)toggle.Content == "Connect", "the same button disconnects token-only connections");
+        }
         string a = Path.Combine(root, "A"), b = Path.Combine(root, "B"), local = Path.Combine(root, "Local"), other = Path.Combine(root, "Other");
         string remoteA = "https://test.365.altium.com/a.git", remoteB = "https://test.365.altium.com/b.git";
         foreach (string folder in new[] { a, b, local, other }) { Directory.CreateDirectory(folder); File.WriteAllText(Path.Combine(folder, "Board.PrjPcb"), "[Design]\r\nVersion=1.0\r\n"); }
