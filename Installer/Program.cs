@@ -71,6 +71,7 @@ namespace Altium17365Setup
             layout.Controls.Add(status);
             var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft };
             var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
+            close.Click += (_, __) => Close();
             buttons.Controls.Add(close); buttons.Controls.Add(install);
             layout.Controls.Add(buttons);
             Controls.Add(layout);

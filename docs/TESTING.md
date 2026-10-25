@@ -1,5 +1,9 @@
 # Verification
 
+## v0.2.1 installer fix
+
+24 October 2026: fixed the setup window's Close button, which previously set a dialog result without closing the modeless form. The rebuilt installer exits successfully when Close is clicked under Wine. The build has no warnings or errors; all 18 installer checks and 6 deployment checks pass.
+
 ## v0.2.0 release checks
 
 24 October 2026: release plugin and installer build without warnings or errors. All 77 authentication checks and 69 Git checks pass on macOS/.NET 8 and Wine/.NET Framework 4.8, alongside 18 installer checks and 6 deployment checks. The WPF process test confirms responsive dispatch and cancellation of the child process tree.
