@@ -3,13 +3,13 @@
 A dockable Altium 365 panel for Altium Designer 17.
 
 - Browser sign-in, workspace selection and automatic token refresh.
-- All workspace projects in one list.
+- All workspace projects in one list, with instant search by name or description.
 - Clone, pull, review changes, commit and push. **Save to Server** saves open documents, then lets you review files and add a comment.
 - Git runs in separate background processes with cancellation.
 
 ## Connect
 
-Open **System → Altium 365 (AD17)**, choose **Sign in**, then select your workspace. Sign-in runs directly through your browser; VS Code is not required. Sessions stay in memory. Addresses and Git preferences are saved locally.
+Open **System → Altium 365 (AD17)**, choose **Sign in**, then select your workspace. Sign-in runs directly through your browser; VS Code is not required. **Log out** in the panel header clears the session and Git credentials. Sessions stay in memory. Addresses and Git preferences are saved locally.
 
 Under **Projects**, choose **Use selected project**, select a working-copy folder in **Git**, then clone or refresh an existing checkout. Install [Git for Windows](https://gitforwindows.org/) in the environment running AD17; Wine needs Windows `git.exe`. An existing checkout can optionally speed up cloning. See the [Git workflow](docs/GIT.md) for details.
 
