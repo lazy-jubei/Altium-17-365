@@ -36,6 +36,7 @@ namespace Altium17Cloud
         private readonly ComboBox region = new ComboBox { ItemsSource = WorkspaceApi.Regions, DisplayMemberPath = "Key", SelectedValuePath = "Value", SelectedIndex = 0 };
         private readonly TextBlock connection = Label("Not signed in"), status = Label("Connect to browse your workspace projects.");
         private readonly TextBlock workspaceStatus = Label("Status: Disconnected");
+        private readonly TextBlock signInPrompt = Label("Sign in to Altium 365 in your browser, then choose a workspace.");
         private readonly Button cancel = Button("Cancel"), signIn = Button("Sign in"), connect = Button("Connect"), refresh = Button("Refresh"), logout = Button("Log out"), open = Button("Open workspace");
         private readonly TabControl tabs = new TabControl();
         private readonly CheckBox followProject = new CheckBox { Content = "Synchronize with server", ToolTip = "Detect the open project's Altium 365 working copy automatically. Choose Save to Server to upload changes.", IsChecked = true, Margin = new Thickness(0, 4, 0, 6) };
@@ -135,7 +136,7 @@ namespace Altium17Cloud
         private UIElement BuildConnection()
         {
             var stack = new StackPanel { Margin = new Thickness(10) };
-            stack.Children.Add(Label("Sign in to Altium 365 in your browser, then choose a workspace."));
+            stack.Children.Add(signInPrompt);
             stack.Children.Add(signIn);
             stack.Children.Add(Label("Workspace")); stack.Children.Add(workspaces); stack.Children.Add(workspaceStatus); stack.Children.Add(connect);
             workspaces.SelectionChanged += (_, __) => UpdateState();
@@ -779,6 +780,7 @@ namespace Altium17Cloud
         {
             bool busy = IsBusy || contextPending;
             bool connected = session.Connected != null;
+            signIn.Visibility = signInPrompt.Visibility = session.SignedIn || connected ? Visibility.Collapsed : Visibility.Visible;
             foreach (var control in busyControls) control.IsEnabled = !busy;
             followProject.IsEnabled = !IsBusy;
             cancel.Visibility = IsBusy ? Visibility.Visible : Visibility.Collapsed;
