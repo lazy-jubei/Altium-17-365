@@ -2,7 +2,7 @@
 
 Install [Git for Windows](https://gitforwindows.org/), or use MinGit, in the Windows environment running AD17. Under Wine, use Windows `git.exe`; the macOS Git executable cannot be launched as a Windows process. The panel finds standard Git installations and `%LOCALAPPDATA%\Altium17365\MinGit\cmd\git.exe`, or you can select an executable under **Git setup**. Git 2.31 or later is required for process-local authentication configuration.
 
-**Follow active project** is enabled by default. The panel reads AD17's focused project and finds its Git working copy, including nested project folders and Git worktrees. Switching projects updates the checkout and repository together; an unlinked or unrelated Git project clears the previous sync target. In-flight operations keep their original project. **Open project** uses the current AD17 session.
+**Synchronize with server** is enabled by default. The panel detects the active project's Altium 365 working copy automatically. Switching projects updates the sync target; an unlinked project clears it. Upload changes with **Save to Server**. **Open project** uses the current AD17 session.
 
 For a new clone or a manual override, use **Manual setup**:
 

@@ -37,7 +37,7 @@ namespace Altium17Cloud
         private readonly TextBlock connection = Label("Not signed in"), status = Label("Connect to browse your workspace projects.");
         private readonly Button cancel = Button("Cancel"), signIn = Button("Sign in"), connect = Button("Connect"), refresh = Button("Refresh"), logout = Button("Log out"), open = Button("Open workspace");
         private readonly TabControl tabs = new TabControl();
-        private readonly CheckBox followProject = new CheckBox { Content = "Follow active project", IsChecked = true, Margin = new Thickness(0, 4, 0, 6) };
+        private readonly CheckBox followProject = new CheckBox { Content = "Synchronize with server", ToolTip = "Detect the open project's Altium 365 working copy automatically. Choose Save to Server to upload changes.", IsChecked = true, Margin = new Thickness(0, 4, 0, 6) };
         private readonly TextBlock activeProject = Label("Open a project in Altium to detect its working copy.");
         private readonly Expander manualSetup = new Expander { Header = "Manual setup" };
         private string activeProjectFile = "\0";
