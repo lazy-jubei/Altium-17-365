@@ -1,5 +1,11 @@
 # Verification
 
+## v0.2.0 release checks
+
+24 October 2026: release plugin and installer build without warnings or errors. All 77 authentication checks and 69 Git checks pass on macOS/.NET 8 and Wine/.NET Framework 4.8, alongside 18 installer checks and 6 deployment checks. The WPF process test confirms responsive dispatch and cancellation of the child process tree.
+
+The README captures are from the native AD17 panel with the public LimeSDR project open. The project-search capture shows one Adafruit result and excludes the workspace header. Both images were visually inspected and checked with local OCR for private names before publication. No private design files, workspace tokens or SDK assemblies are included in the release.
+
 ## Browser sign-in and complete project list
 
 24 October 2026, AD17 Wine prefix / .NET Framework 4.8:
