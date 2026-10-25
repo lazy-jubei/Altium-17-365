@@ -32,6 +32,13 @@ namespace Altium17Cloud
             return result;
         }
         internal string[] ModifiedFiles(string folder) => Modified(folder).Select(d => d.GetFileName()).ToArray();
+        internal string ActiveProjectFile()
+        {
+            string path = client.GetDXPWorkspace()?.DM_FocusedProject()?.DM_ProjectFullPath();
+            if (!string.IsNullOrWhiteSpace(path) && Path.IsPathRooted(path)) return path;
+            path = client.GetCurrentView()?.GetOwnerDocument()?.GetFileName();
+            return !string.IsNullOrWhiteSpace(path) && Path.IsPathRooted(path) ? path : null;
+        }
         internal string[] ProjectFiles()
         {
             var workspace = client.GetDXPWorkspace();

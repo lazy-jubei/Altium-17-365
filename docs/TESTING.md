@@ -1,5 +1,15 @@
 # Verification
 
+## v0.5.0 active project following
+
+25 October 2026, AD17 17.1 under Wine:
+
+- On startup, the panel detected the open project's checkout and replaced a deliberately different saved folder. Manual setup starts collapsed; following is enabled by default.
+- Opened projects in two separate checkouts through the panel and opened their project documents. The displayed project and checkout changed with AD17's focused project. Opening an unlinked local project cleared the repository and disabled sync actions; Open project remained available.
+- Open project now calls the workspace manager in the current AD17 process. No second AD17 process or parent-window exception appeared during the native checks. No cloud commits were created; the isolated cloud test project still has seven empty-message commits.
+- The actual WPF view passes 22 integration checks under Wine with an SDK focus adapter. These cover stale asynchronous results, disabling old actions while detecting, clearing credentials and commit drafts, freezing the checkout before waiting for background cancellation, preserving an in-flight operation's checkout, manual overrides and restart persistence. Windows CI runs the same suite without the proprietary SDK.
+- The 116 .NET 8 Git checks include nested checkout discovery, worktree pointers, unversioned projects and rejecting unrelated Git remotes. The cropped README capture shows the native panel with a generic local test project; no private workspace header or design is included.
+
 ## v0.4.1 pull/push and conflict review
 
 25 October 2026, AD17 17.1 under Wine:

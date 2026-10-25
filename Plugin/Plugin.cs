@@ -1,6 +1,5 @@
 using DXP;
 using System;
-using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -63,6 +62,7 @@ namespace Altium17Cloud
                     gui.SetPanelVisibleInCurrentForm(PanelName, true);
                     if (!wasOpen && gui.CanResizePanel(PanelName)) gui.ResizePanel(PanelName, 500, 700);
                     gui.SetPanelActiveInCurrentForm(PanelName);
+                    panel.FollowCurrentProject();
                 }
                 catch { MessageBox.Show("Unable to open the Altium 365 panel.", "Altium 365 (AD17)", MessageBoxButtons.OK, MessageBoxIcon.Error); }
             }));
@@ -84,6 +84,7 @@ namespace Altium17Cloud
         private readonly WorkspacePanel form;
         internal WorkspacePanelView(IClient client) : this(new WorkspacePanel(client)) { }
         private WorkspacePanelView(WorkspacePanel form) : base(form, WorkspaceModule.PanelName, "Altium 365 (AD17)") { this.form = form; }
+        internal void FollowCurrentProject() => form.FollowCurrentProject();
         internal bool HasServerChanges => form.HasServerChanges;
         internal bool IsBusy => form.IsBusy;
         internal bool ServerSaveMatchesContext(IServerDocumentView context) => form.ServerSaveMatchesContext(context);
@@ -100,8 +101,10 @@ namespace Altium17Cloud
             this.client = client; documents = new WorkspaceDocuments(client);
             view = new WorkspaceView(path =>
             {
-                // Open with this AD17 installation even if a newer Altium owns the file association.
-                Process.Start(new ProcessStartInfo(Process.GetCurrentProcess().MainModule.FileName, ProcessGitRunner.Quote(path)) { UseShellExecute = false });
+                if (path.IndexOf('|') >= 0) throw new ArgumentException("The project filename contains an unsupported character.");
+                string parameters = "ObjectKind=Project|FileName=" + path;
+                var workspace = client.GetServerModuleByName("WorkspaceManager") ?? throw new InvalidOperationException("Altium's project manager is unavailable.");
+                workspace.GetCommandLauncher().LaunchCommand("OpenObject", ref parameters, client.GetCurrentView());
             }, documents);
             Text = "Altium 365 (AD17)";
             ClientSize = new System.Drawing.Size(500, 700);
@@ -118,6 +121,7 @@ namespace Altium17Cloud
             });
             client.RegisterNotificationHandler(notifications);
         }
+        internal void FollowCurrentProject() => view.FollowCurrentProject();
         internal bool HasServerChanges => view.HasServerChanges;
         internal bool IsBusy => view.IsBusy;
         internal bool ServerSaveMatchesContext(IServerDocumentView context)

@@ -37,6 +37,11 @@ namespace Altium17Cloud
         private readonly TextBlock connection = Label("Not signed in"), status = Label("Connect to browse your workspace projects.");
         private readonly Button cancel = Button("Cancel"), signIn = Button("Sign in"), connect = Button("Connect"), refresh = Button("Refresh"), logout = Button("Log out"), open = Button("Open workspace");
         private readonly TabControl tabs = new TabControl();
+        private readonly CheckBox followProject = new CheckBox { Content = "Follow active project", IsChecked = true, Margin = new Thickness(0, 4, 0, 6) };
+        private readonly TextBlock activeProject = Label("Open a project in Altium to detect its working copy.");
+        private readonly Expander manualSetup = new Expander { Header = "Manual setup" };
+        private string activeProjectFile = "\0";
+        private bool contextPending, settingWorkingCopy;
         private readonly TextBox gitRemote = new TextBox(), gitFolder = new TextBox(), gitExecutable = new TextBox(), gitReference = new TextBox(), commitMessage = new TextBox();
         private readonly PasswordBox gitToken = new PasswordBox();
         private readonly TextBlock gitSummary = Label("Choose a project or enter its repository URL, then clone or select a working copy.");
@@ -71,23 +76,24 @@ namespace Altium17Cloud
         internal bool IsBusy => operation != null;
         internal bool HasServerChanges
         {
-            get { ReadEditorState(); return !disposed && editorStateAvailable && workingStatus?.Branch == "master" && (unsavedDocuments > 0 || workingStatus.HasPendingSave); }
+            get { DetectActiveProject(); ReadEditorState(); return !contextPending && !disposed && editorStateAvailable && workingStatus?.Branch == "master" && (unsavedDocuments > 0 || workingStatus.HasPendingSave); }
         }
         private DataGrid projectGrid;
         private CloudProject gitProject;
         private Workspace gitWorkspace;
         private GitStatus workingStatus;
         private readonly List<Control> busyControls = new List<Control>();
-        private readonly string settingsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Altium17365", "settings.json");
+        private readonly string settingsPath;
         private CancellationTokenSource operation;
         private bool disposed;
         private static HttpClient CreateHttp(TimeSpan timeout) => new HttpClient(new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false, SslProtocols = SslProtocols.Tls12 }) { Timeout = timeout };
         private static TextBlock Label(string text) => new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 6) };
         private static Button Button(string text) => new Button { Content = text, Padding = new Thickness(10, 5, 10, 5), Margin = new Thickness(0, 4, 6, 4) };
-        internal WorkspaceView(Action<string> openProjectAction = null, WorkspaceDocuments documents = null)
+        internal WorkspaceView(Action<string> openProjectAction = null, WorkspaceDocuments documents = null, string settingsPath = null)
         {
             this.openProjectAction = openProjectAction;
             this.documents = documents;
+            this.settingsPath = settingsPath ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Altium17365", "settings.json");
             session = new WorkspaceSession(new WorkspaceApi(apiHttp), authHttp);
             projectView = CollectionViewSource.GetDefaultView(projects);
             projectView.Filter = item => item is CloudProject project && projectTerms.All(term =>
@@ -110,8 +116,15 @@ namespace Altium17Cloud
             tabs.Items.Add(new TabItem { Header = "Git", Content = BuildGit() });
             gitToken.PasswordChanged += (_, __) => UpdateState();
             accessToken.PasswordChanged += (_, __) => UpdateState();
-            LoadSettings(); UpdateState();
-            monitorTimer.Tick += async (_, __) => { if (!monitoring) { monitorTask = MonitorAsync(); await monitorTask; } }; monitorTimer.Start();
+            LoadSettings(); manualSetup.IsExpanded = followProject.IsChecked != true;
+            if (followProject.IsChecked != true) activeProject.Text = "Manual working copy";
+            ClearWorkingStatus(); DetectActiveProject(); UpdateState();
+            monitorTimer.Tick += async (_, __) =>
+            {
+                DetectActiveProject();
+                if (!monitoring) { monitorTask = MonitorAsync(); await monitorTask; }
+            };
+            monitorTimer.Start();
         }
         private UIElement BuildConnection()
         {
@@ -155,6 +168,7 @@ namespace Altium17Cloud
             workspaceUrl.Text = session.Connected.Url.AbsoluteUri;
             tabs.SelectedIndex = 1;
             await ShowProjectsAsync(page, cancellation);
+            if (followProject.IsChecked == true && monitorFolder != null) tabs.SelectedIndex = 2;
         }
         private UIElement BuildProjects()
         {
@@ -216,7 +230,8 @@ namespace Altium17Cloud
             useProject.Click += (_, __) =>
             {
                 if (!(grid.SelectedItem is CloudProject project) || !projectView.Contains(project) || string.IsNullOrEmpty(project.RepositoryUrl)) return;
-                gitRemote.Text = project.RepositoryUrl; gitProject = project; gitWorkspace = session.Connected; gitToken.Clear();
+                followProject.IsChecked = false;
+                SetWorkingCopy(project.RepositoryUrl, gitFolder.Text); BindKnownProject();
                 tabs.SelectedIndex = 2; status.Text = "Project selected. Choose its local working-copy folder, or a new folder to clone into.";
                 UpdateState();
             };
@@ -227,7 +242,19 @@ namespace Altium17Cloud
             var layout = new DockPanel { Margin = new Thickness(10) };
             var settings = new StackPanel();
             var configuration = new StackPanel();
-            configuration.Children.Add(Label("Choose a project from the Projects tab, then clone or select its working copy."));
+            settings.Children.Add(followProject); settings.Children.Add(activeProject);
+            followProject.Checked += (_, __) =>
+            {
+                if (settingWorkingCopy) return;
+                manualSetup.IsExpanded = false; activeProjectFile = "\0"; DetectActiveProject(); SaveSettings();
+            };
+            followProject.Unchecked += (_, __) =>
+            {
+                if (settingWorkingCopy) return;
+                contextPending = false; monitorCancellation?.Cancel(); manualSetup.IsExpanded = true;
+                activeProject.Text = "Manual working copy"; UpdateState(); SaveSettings();
+            };
+            configuration.Children.Add(Label("For cloning or a different working copy, choose a workspace project or enter its repository below."));
             var direct = new StackPanel();
             direct.Children.Add(Label("Altium 365 repository URL")); direct.Children.Add(gitRemote);
             direct.Children.Add(Label("Workspace token (direct Git only)")); direct.Children.Add(gitToken);
@@ -237,7 +264,7 @@ namespace Altium17Cloud
             chooseFolder.Click += (_, __) =>
             {
                 using (var dialog = new System.Windows.Forms.FolderBrowserDialog { Description = "Choose an existing working copy or an empty folder to clone into.", ShowNewFolderButton = true })
-                    if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK) gitFolder.Text = dialog.SelectedPath;
+                    if ((documents == null ? dialog.ShowDialog() : dialog.ShowDialog(documents)) == System.Windows.Forms.DialogResult.OK) gitFolder.Text = dialog.SelectedPath;
             };
             var advanced = new StackPanel();
             advanced.Children.Add(Label("Git executable (optional; use Git for Windows under Wine)")); advanced.Children.Add(gitExecutable);
@@ -245,12 +272,13 @@ namespace Altium17Cloud
             chooseGit.Click += (_, __) =>
             {
                 using (var dialog = new System.Windows.Forms.OpenFileDialog { Filter = "Git executable|git.exe", CheckFileExists = true })
-                    if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK) gitExecutable.Text = dialog.FileName;
+                    if ((documents == null ? dialog.ShowDialog() : dialog.ShowDialog(documents)) == System.Windows.Forms.DialogResult.OK) gitExecutable.Text = dialog.FileName;
             };
             advanced.Children.Add(Label("Existing checkout to reuse when cloning (optional)")); advanced.Children.Add(gitReference);
             advanced.Children.Add(Label("Reuses downloaded history and creates an independent copy. Local edits in the existing checkout are preserved."));
             configuration.Children.Add(new Expander { Header = "Git setup", Content = advanced });
-            settings.Children.Add(new Expander { Header = "Working copy", IsExpanded = true, Content = new ScrollViewer { Content = configuration, MaxHeight = 280, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled } });
+            manualSetup.Content = new ScrollViewer { Content = configuration, MaxHeight = 280, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+            settings.Children.Add(manualSetup);
             var buttons = new WrapPanel();
             saveToServer.FontWeight = FontWeights.SemiBold;
             saveToServer.Background = new SolidColorBrush(Color.FromRgb(24, 91, 153)); saveToServer.Foreground = Brushes.White;
@@ -268,8 +296,12 @@ namespace Altium17Cloud
             changesGrid.Columns.Add(new DataGridTextColumn { Header = "Status", IsReadOnly = true, Binding = new System.Windows.Data.Binding("Status"), Width = DataGridLength.Auto });
             changesGrid.Columns.Add(new DataGridTextColumn { Header = "File", IsReadOnly = true, Binding = new System.Windows.Data.Binding("Path"), Width = new DataGridLength(1, DataGridLengthUnitType.Star) });
             layout.Children.Add(changesGrid);
-            gitRemote.TextChanged += (_, __) => { gitProject = null; gitWorkspace = null; ClearWorkingStatus(); };
-            gitFolder.TextChanged += (_, __) => ClearWorkingStatus();
+            gitRemote.TextChanged += (_, __) =>
+            {
+                if (settingWorkingCopy) return;
+                followProject.IsChecked = false; gitProject = null; gitWorkspace = null; gitToken.Clear(); ClearWorkingStatus();
+            };
+            gitFolder.TextChanged += (_, __) => { if (!settingWorkingCopy) { followProject.IsChecked = false; ClearWorkingStatus(); } };
             clone.Click += async (_, __) => await RunAsync(async ct =>
             {
                 var git = Git();
@@ -312,8 +344,10 @@ namespace Altium17Cloud
             {
                 try
                 {
-                    using (var dialog = new System.Windows.Forms.OpenFileDialog { InitialDirectory = gitFolder.Text, Filter = "Altium PCB project|*.PrjPcb", CheckFileExists = true })
-                        if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK) openProjectAction(dialog.FileName);
+                    string folder = gitFolder.Text;
+                    if (!Directory.Exists(folder) && !string.IsNullOrWhiteSpace(activeProjectFile) && Path.IsPathRooted(activeProjectFile)) folder = Path.GetDirectoryName(activeProjectFile);
+                    using (var dialog = new System.Windows.Forms.OpenFileDialog { Title = "Open project", InitialDirectory = folder, Filter = "Altium PCB project|*.PrjPcb", CheckFileExists = true })
+                        if ((documents == null ? dialog.ShowDialog() : dialog.ShowDialog(documents)) == System.Windows.Forms.DialogResult.OK) { openProjectAction(dialog.FileName); FollowCurrentProject(false); }
                 }
                 catch { status.Text = "Unable to open the project. Open its PrjPcb file from Altium's File menu."; }
             };
@@ -337,13 +371,71 @@ namespace Altium17Cloud
                     throw new InvalidOperationException("Connect to this project's workspace or select a project from the connected workspace.");
                 return await session.AccessTokenAsync(cancellation);
             }
+            if (followProject.IsChecked == true) throw new InvalidOperationException("Sign in and connect to this project's Altium 365 workspace before synchronizing.");
             return gitToken.Password;
         }
-        private void ClearWorkingStatus()
+        private void BindKnownProject()
         {
-            lastFetchScan = DateTime.MinValue;
+            gitProject = projects.FirstOrDefault(p => p.RepositoryUrl == gitRemote.Text);
+            gitWorkspace = gitProject == null ? null : session.Connected;
+        }
+        private void SetWorkingCopy(string remote, string folder)
+        {
+            bool changed = gitRemote.Text != (remote ?? "") || !string.Equals(gitFolder.Text, folder ?? "", StringComparison.OrdinalIgnoreCase);
+            if (!changed) return;
+            settingWorkingCopy = true;
+            try { gitRemote.Text = remote ?? ""; gitFolder.Text = folder ?? ""; }
+            finally { settingWorkingCopy = false; }
+            gitToken.Clear(); gitProject = null; gitWorkspace = null; commitMessage.Clear(); ClearWorkingStatus(false);
+        }
+        private void DetectActiveProject()
+        {
+            if (disposed || operation != null || followProject.IsChecked != true) return;
+            string path;
+            try { path = documents?.ActiveProjectFile(); }
+            catch { path = null; }
+            if (string.Equals(path, activeProjectFile, StringComparison.OrdinalIgnoreCase)) return;
+            activeProjectFile = path; contextPending = true; monitorCancellation?.Cancel();
+            activeProject.Text = path == null ? "No active saved project." : Path.GetFileNameWithoutExtension(path) + " — detecting working copy…";
+            UpdateState();
+        }
+        private async Task FollowActiveProjectAsync(CancellationToken ct)
+        {
+            if (!contextPending || followProject.IsChecked != true) return;
+            string path = activeProjectFile;
+            try
+            {
+                string folder = await Task.Run(() => ProjectWorkingCopy.FindRoot(path), ct);
+                string remote = folder == null ? null : await Git().ReadRemoteAsync(folder, ct);
+                ct.ThrowIfCancellationRequested();
+                if (disposed || followProject.IsChecked != true || !string.Equals(path, activeProjectFile, StringComparison.OrdinalIgnoreCase)) return;
+                SetWorkingCopy(remote, remote == null ? null : folder); BindKnownProject();
+                activeProject.Text = path == null ? "No active saved project. Open a project in Altium." :
+                    Path.GetFileNameWithoutExtension(path) + (remote == null ? " — no Altium 365 working copy detected." : "");
+                activeProject.ToolTip = folder ?? path;
+                if (remote == null) gitSummary.Text = "Choose a workspace project to clone, or use Manual setup for an existing checkout.";
+                contextPending = false; SaveSettings();
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception error)
+            {
+                if (!disposed && path == activeProjectFile && followProject.IsChecked == true)
+                {
+                    SetWorkingCopy(null, null); contextPending = false;
+                    activeProject.Text = "Cannot detect this project's working copy. " + FriendlyError(error);
+                }
+            }
+            finally { if (!disposed) UpdateState(); }
+        }
+        internal void FollowCurrentProject(bool showConnection = true)
+        {
+            followProject.IsChecked = true; activeProjectFile = "\0"; DetectActiveProject();
+            if (showConnection) tabs.SelectedIndex = session.Connected == null ? 0 : 2;
+        }
+        private void ClearWorkingStatus(bool cancelPending = true)
+        {
             workingStatus = null; changes.Clear(); unsavedDocuments = 0; gitSummary.Text = "Clone the project or refresh the selected working copy.";
-            ConfigureWatcher(); UpdateState();
+            ConfigureWatcher(cancelPending); UpdateState();
         }
         private async Task RefreshGitAsync(CancellationToken cancellation)
         {
@@ -359,7 +451,7 @@ namespace Altium17Cloud
             changes.Clear();
             foreach (var change in result.Changes) { change.Selected = !selections.TryGetValue(change.Path, out bool selected) || selected; changes.Add(change); }
             lastStatusRead = DateTime.UtcNow; ReadEditorState(); UpdateGitSummary();
-            if (monitorFolder == null) ConfigureWatcher();
+            if (monitorFolder == null) ConfigureWatcher(false);
         }
         internal void NotifyDocumentChanged()
         {
@@ -386,9 +478,9 @@ namespace Altium17Cloud
                 (unsavedDocuments > 0 ? " · " + unsavedDocuments + " unsaved documents" : "") + "." +
                 (!editorStateAvailable ? " Altium's document state is unavailable; Save to Server is disabled." : "");
         }
-        private void ConfigureWatcher()
+        private void ConfigureWatcher(bool cancelPending = true)
         {
-            monitorCancellation?.Cancel(); watcher?.Dispose(); watcher = null; monitorFolder = null;
+            if (cancelPending) monitorCancellation?.Cancel(); watcher?.Dispose(); watcher = null; monitorFolder = null;
             statusRequested = false; lastStatusRead = DateTime.MinValue;
             try
             {
@@ -415,13 +507,15 @@ namespace Altium17Cloud
             if (disposed || operation != null || monitoring) return;
             ReadEditorState(); UpdateGitSummary(); UpdateState();
             bool fetchDue = (session.Connected != null || gitToken.Password.Length > 0) && DateTime.UtcNow - lastFetchScan >= BackgroundFetchSchedule.Interval;
-            if (!fetchDue && (monitorFolder == null || (!statusRequested && DateTime.UtcNow - lastStatusRead < TimeSpan.FromSeconds(30)))) return;
+            if (!contextPending && !fetchDue && (monitorFolder == null || (!statusRequested && DateTime.UtcNow - lastStatusRead < TimeSpan.FromSeconds(30)))) return;
             statusRequested = false; monitoring = true; UpdateState();
             try
             {
                 using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90)))
                 {
                     monitorCancellation = timeout;
+                    await FollowActiveProjectAsync(timeout.Token);
+                    if (contextPending) return;
                     if (fetchDue) await FetchOpenProjectsAsync(timeout.Token);
                     if (monitorFolder != null) await RefreshGitAsync(timeout.Token);
                 }
@@ -450,13 +544,8 @@ namespace Altium17Cloud
                 var folders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 foreach (string file in open)
                 {
-                    var directory = new DirectoryInfo(Path.GetDirectoryName(file));
-                    while (directory != null)
-                    {
-                        string git = Path.Combine(directory.FullName, ".git");
-                        if (File.Exists(git) || Directory.Exists(git)) { folders.Add(WorkingCopyPath.Root(directory.FullName)); break; }
-                        directory = directory.Parent;
-                    }
+                    string root = ProjectWorkingCopy.FindRoot(file);
+                    if (root != null) folders.Add(root);
                 }
                 if (monitorFolder != null) folders.Add(WorkingCopyPath.Root(selectedFolder));
                 return folders.ToArray();
@@ -488,7 +577,8 @@ namespace Altium17Cloud
             }
             if (!disposed)
             {
-                lastFetchCompleted = DateTime.UtcNow; lastFetchCount = checkedProjects; RenderFetchNotice();
+                if (checkedProjects > 0 || fetchErrors.Count > 0) { lastFetchCompleted = DateTime.UtcNow; lastFetchCount = checkedProjects; }
+                RenderFetchNotice();
             }
         }
         private void RecordFetch(string folder, GitStatus result)
@@ -503,10 +593,10 @@ namespace Altium17Cloud
         private void RenderFetchNotice()
         {
             if (fetchScanError != null) { fetchNotice.Text = fetchScanError; fetchNotice.Foreground = Brushes.DarkOrange; return; }
-            if (lastFetchCompleted == DateTime.MinValue) return;
+            if (lastFetchCompleted == DateTime.MinValue) { fetchNotice.Text = "Background fetch checks open projects every two minutes when connected."; fetchNotice.Foreground = Brushes.DimGray; return; }
             string checkedAt = lastFetchCompleted.ToLocalTime().ToString("HH:mm:ss");
             var notices = serverNotices.Values.Concat(fetchErrors.Values).ToArray();
-            fetchNotice.Text = notices.Length == 0 ? "Background fetch checked " + lastFetchCount + " projects at " + checkedAt + ". Next check in two minutes." :
+            fetchNotice.Text = notices.Length == 0 ? "Background fetch checked " + lastFetchCount + (lastFetchCount == 1 ? " project at " : " projects at ") + checkedAt + ". Checks every two minutes." :
                 "Checked " + checkedAt + " · " + string.Join("\n", notices) + (fetchErrors.Count > 0 ? "\nBackground fetch retries automatically." : "\nReview Pull changes to update files.");
             fetchNotice.Foreground = notices.Length == 0 ? Brushes.DimGray : Brushes.DarkOrange;
         }
@@ -607,11 +697,20 @@ namespace Altium17Cloud
         private async Task RunAsync(Func<CancellationToken, Task> action, string message, TimeSpan? timeout = null)
         {
             if (disposed || operation != null) return;
-            if (monitoring) { monitorCancellation?.Cancel(); if (monitorTask != null) await monitorTask; }
-            if (disposed || operation != null) return;
+            DetectActiveProject();
             var pending = new CancellationTokenSource(timeout ?? TimeSpan.FromMinutes(5));
             operation = pending; status.Text = message; UpdateState();
-            try { await action(pending.Token); }
+            try
+            {
+                // Freeze the selected project before awaiting a cancelled background fetch.
+                if (monitoring) { monitorCancellation?.Cancel(); if (monitorTask != null) await monitorTask; }
+                pending.Token.ThrowIfCancellationRequested();
+                if (disposed) return;
+                await FollowActiveProjectAsync(pending.Token);
+                if (contextPending) throw new InvalidOperationException("Wait for the active project's working copy to be detected.");
+                pending.Token.ThrowIfCancellationRequested();
+                await action(pending.Token);
+            }
             catch (OperationCanceledException) { if (!disposed) status.Text = "Operation cancelled or timed out."; }
             catch (Exception error)
             {
@@ -630,18 +729,20 @@ namespace Altium17Cloud
         }
         private void UpdateState()
         {
-            bool busy = IsBusy;
+            bool busy = IsBusy || contextPending;
             foreach (var control in busyControls) control.IsEnabled = !busy;
-            cancel.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+            followProject.IsEnabled = !IsBusy;
+            cancel.Visibility = IsBusy ? Visibility.Visible : Visibility.Collapsed;
             connect.IsEnabled = !busy && session.SignedIn && workspaces.SelectedItem is Workspace;
             logout.IsEnabled = !busy && (session.SignedIn || session.Connected != null || gitToken.Password.Length > 0 || accessToken.Password.Length > 0);
             createProject.IsEnabled = refresh.IsEnabled = open.IsEnabled = !busy && session.Connected != null;
             useProject.IsEnabled = !busy && session.Connected != null && projectGrid?.SelectedItem is CloudProject project && projectView.Contains(project) && !string.IsNullOrEmpty(project.RepositoryUrl);
-            clone.IsEnabled = gitRefresh.IsEnabled = !busy;
+            clone.IsEnabled = !busy && followProject.IsChecked != true;
+            gitRefresh.IsEnabled = !busy && (followProject.IsChecked != true || monitorFolder != null);
             fetch.IsEnabled = !busy && workingStatus != null;
             pull.IsEnabled = push.IsEnabled = !busy && workingStatus?.Branch == "master";
             commit.IsEnabled = !busy && workingStatus?.Branch == "master" && !workingStatus.HasConflicts && changes.Count > 0;
-            openProject.IsEnabled = !busy && workingStatus != null && openProjectAction != null;
+            openProject.IsEnabled = !busy && openProjectAction != null;
             saveToServer.Visibility = workingStatus?.Branch == "master" && (unsavedDocuments > 0 || workingStatus.HasPendingSave) ? Visibility.Visible : Visibility.Collapsed;
             saveToServer.IsEnabled = !busy && editorStateAvailable;
             connection.Text = session.Connected == null ? (session.SignedIn ? "Signed in" : "Not signed in") : "Connected · " + session.Connected.Name;
@@ -651,6 +752,7 @@ namespace Altium17Cloud
         private void TryOpen(string url) { try { OpenBrowser(url); } catch { status.Text = "Unable to open the browser."; } }
         private void LoadSettings()
         {
+            settingWorkingCopy = true;
             try
             {
                 var saved = JsonConvert.DeserializeObject<Dictionary<string, string>>(File.ReadAllText(settingsPath));
@@ -663,15 +765,17 @@ namespace Altium17Cloud
                 if (saved.TryGetValue("gitExecutable", out var executable)) gitExecutable.Text = executable;
                 if (saved.TryGetValue("gitReference", out var reference)) gitReference.Text = reference;
                 if (saved.TryGetValue("region", out var gateway) && WorkspaceApi.Regions.Any(r => r.Value == gateway)) region.SelectedValue = gateway;
+                if (saved.TryGetValue("followActiveProject", out var follow) && bool.TryParse(follow, out bool enabled)) followProject.IsChecked = enabled;
             }
             catch { }
+            finally { settingWorkingCopy = false; }
         }
         private void SaveSettings()
         {
             try
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(settingsPath));
-                File.WriteAllText(settingsPath, JsonConvert.SerializeObject(new Dictionary<string, string> { ["workspaceUrl"] = workspaceUrl.Text, ["region"] = (string)region.SelectedValue, ["gitRemote"] = gitRemote.Text, ["gitFolder"] = gitFolder.Text, ["gitExecutable"] = gitExecutable.Text, ["gitReference"] = gitReference.Text }));
+                File.WriteAllText(settingsPath, JsonConvert.SerializeObject(new Dictionary<string, string> { ["workspaceUrl"] = workspaceUrl.Text, ["region"] = (string)region.SelectedValue, ["gitRemote"] = gitRemote.Text, ["gitFolder"] = gitFolder.Text, ["gitExecutable"] = gitExecutable.Text, ["gitReference"] = gitReference.Text, ["followActiveProject"] = (followProject.IsChecked == true).ToString() }));
             }
             catch { /* Preferences are optional; credentials are never persisted. */ }
         }

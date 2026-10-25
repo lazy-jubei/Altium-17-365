@@ -9,6 +9,7 @@ internal static partial class Program
 {
     static async Task SyncChecks(string root)
     {
+        await ProjectContextChecks(root);
         Require(WorkingCopyPath.Root(root) == WorkingCopyPath.Root(root + Path.DirectorySeparatorChar), "checkout identities ignore trailing directory separators");
         Require(WorkingCopyPath.Root(Path.GetPathRoot(root)) == Path.GetPathRoot(root), "normalization preserves an absolute drive root");
         var schedule = new BackgroundFetchSchedule();
@@ -97,6 +98,23 @@ internal static partial class Program
         }
         finally { inputEncoding.SetValue(null, previousEncoding); }
 #endif
+    }
+    static async Task ProjectContextChecks(string root)
+    {
+        string project = Path.Combine(root, "project context"), nested = Path.Combine(project, "Design", "Board.PrjPcb");
+        Directory.CreateDirectory(Path.GetDirectoryName(nested)); await Plain(project, "init", "--initial-branch=master");
+        Require(ProjectWorkingCopy.FindRoot(nested) == project, "active project discovery finds a checkout above nested project files");
+        string nestedRoot = Path.Combine(project, "Design"); Directory.CreateDirectory(Path.Combine(nestedRoot, ".git"));
+        Require(ProjectWorkingCopy.FindRoot(nested) == nestedRoot, "a nested checkout takes precedence over its parent repository");
+        Directory.Delete(Path.Combine(nestedRoot, ".git")); File.WriteAllText(Path.Combine(nestedRoot, ".git"), "gitdir: another/worktree");
+        Require(ProjectWorkingCopy.FindRoot(nested) == nestedRoot, "active project discovery recognizes Git worktree pointer files");
+        Require(ProjectWorkingCopy.FindRoot(null) == null && ProjectWorkingCopy.FindRoot("Untitled.PrjPcb") == null &&
+            ProjectWorkingCopy.FindRoot(Path.GetPathRoot(root)) == null, "unsaved or absent projects cannot reuse a previous working copy");
+        string local = Path.Combine(root, "local project", "Local.PrjPcb"); Directory.CreateDirectory(Path.GetDirectoryName(local));
+        Require(ProjectWorkingCopy.FindRoot(local) == null, "a local project without Git has no automatic cloud target");
+        await Plain(project, "remote", "add", "origin", "https://github.com/example/local-project.git");
+        Require(await new WorkspaceGit(new ProcessGitRunner(Environment.GetEnvironmentVariable("ALTIUM17365_TEST_GIT"))).ReadRemoteAsync(project, None) == null,
+            "unrelated Git repositories are excluded from Altium 365 detection without credentials");
     }
     static async Task SyncEdgeChecks(string root)
     {

@@ -97,7 +97,7 @@ def deploy(dist, prefix, extensions_root=None, dry_run=False, altium_version='17
             if platform is None:
                 platform = ET.SubElement(pv, name)
             platform.set('BuildNumber', version)
-        for name, value in [('Path', windows_path(target, prefix)), ('Version', '0.4.1.0')]:
+        for name, value in [('Path', windows_path(target, prefix)), ('Version', '0.5.0.0')]:
             child = item.find(name)
             if child is None:
                 child = ET.SubElement(item, name)
