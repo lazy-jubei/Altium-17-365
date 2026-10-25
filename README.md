@@ -11,7 +11,7 @@ A dockable Altium 365 panel for Altium Designer 17.
 
 ## Install
 
-Download [v0.6.0 setup](https://github.com/lazy-jubei/Altium-17-365/releases/download/v0.6.0/Altium-17-365-Setup.exe). Close AD17, run the installer and restart. Includes portable Git; no separate Git installation is needed. Requires .NET Framework 4.8.
+Download [v0.6.1 setup](https://github.com/lazy-jubei/Altium-17-365/releases/download/v0.6.1/Altium-17-365-Setup.exe). Close AD17, run the installer and restart. Includes portable Git; no separate Git installation is needed. Requires .NET Framework 4.8.
 
 ## Connect
 

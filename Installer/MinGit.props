@@ -7,7 +7,7 @@
   </PropertyGroup>
   <Target Name="PreparePortableGit" BeforeTargets="AssignTargetPaths">
     <MakeDir Directories="$([System.IO.Path]::GetDirectoryName('$(MinGitArchive)'))" />
-    <DownloadFile SourceUrl="$(MinGitUrl)" DestinationFileName="$(MinGitArchive).download" Condition="!Exists('$(MinGitArchive)')" />
+    <DownloadFile SourceUrl="$(MinGitUrl)" DestinationFolder="$([System.IO.Path]::GetDirectoryName('$(MinGitArchive)'))" DestinationFileName="$([System.IO.Path]::GetFileName('$(MinGitArchive)')).download" Condition="!Exists('$(MinGitArchive)')" />
     <PropertyGroup>
       <MinGitCandidate Condition="Exists('$(MinGitArchive)')">$(MinGitArchive)</MinGitCandidate>
       <MinGitCandidate Condition="!Exists('$(MinGitArchive)')">$(MinGitArchive).download</MinGitCandidate>
