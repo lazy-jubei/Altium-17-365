@@ -15,6 +15,7 @@ namespace Altium17365Setup
         internal static readonly string[] Files = { "Altium17-365.dll", "Altium17-365.Core.dll", "Altium.Auth.dll", "Newtonsoft.Json.dll", "Altium17-365.Ins", "Altium17-365.rcs", "Altium17-365.target.json", "THIRD-PARTY-NOTICES.txt" };
 
         internal static string Install(string root, IDictionary<string, byte[]> payload, string version,
+            Stream portableGit, string gitHash,
             Action<string, string, string> commitRegistry = null)
         {
             if (payload.Count != Files.Length || Files.Any(name => !payload.TryGetValue(name, out var bytes) || bytes.Length == 0))
@@ -62,6 +63,7 @@ namespace Altium17365Setup
             {
                 Directory.CreateDirectory(stage);
                 foreach (string name in Files) File.WriteAllBytes(Path.Combine(stage, name), payload[name]);
+                PortableGit.Extract(portableGit, gitHash, Path.Combine(stage, "MinGit"));
                 // AD17's extension loader expects UTF-8 without a byte-order mark.
                 using (var writer = XmlWriter.Create(temporary, new XmlWriterSettings { Encoding = new UTF8Encoding(false), Indent = true }))
                     xml.Save(writer);

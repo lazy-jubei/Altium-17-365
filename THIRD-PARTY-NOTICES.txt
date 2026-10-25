@@ -45,3 +45,19 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+MinGit 2.56.0.3 (32-bit), Git for Windows — https://gitforwindows.org/mingit.html
+
+The unmodified upstream MinGit distribution is bundled beside this plugin.
+Its Git GPLv2 license is in MinGit/LICENSE.txt; dependency licenses are retained
+in MinGit/mingw32/share/licenses, MinGit/usr/share/licenses and the package's
+other documentation directories. Installed package versions are recorded in
+MinGit/etc/package-versions.txt.
+
+Upstream binary and release metadata:
+https://github.com/git-for-windows/git/releases/tag/v2.56.0.windows.3
+Git source for this release:
+https://github.com/git-for-windows/git/tree/v2.56.0.windows.3
+Dependency sources and build recipes:
+https://github.com/git-for-windows/MINGW-packages
+https://github.com/git-for-windows/MSYS2-packages

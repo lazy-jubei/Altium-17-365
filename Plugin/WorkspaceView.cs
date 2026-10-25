@@ -267,7 +267,7 @@ namespace Altium17Cloud
                     if ((documents == null ? dialog.ShowDialog() : dialog.ShowDialog(documents)) == System.Windows.Forms.DialogResult.OK) gitFolder.Text = dialog.SelectedPath;
             };
             var advanced = new StackPanel();
-            advanced.Children.Add(Label("Git executable (optional; use Git for Windows under Wine)")); advanced.Children.Add(gitExecutable);
+            advanced.Children.Add(Label("Git executable (optional; defaults to bundled Git)")); advanced.Children.Add(gitExecutable);
             var chooseGit = Button("Choose git.exe…"); advanced.Children.Add(chooseGit);
             chooseGit.Click += (_, __) =>
             {

@@ -1,5 +1,14 @@
 # Verification
 
+## v0.6.0 bundled Git
+
+25 October 2026:
+
+- Setup embeds the pinned official 32-bit MinGit 2.56.0.3 archive and verifies its SHA256 before extraction. Git, HTTPS certificates and upstream licenses install beside the plugin without changing PATH. Plugin updates and registration share one rollback transaction.
+- All 48 installer checks and nine Wine deployment checks pass, including corrupt or incomplete Git, unsafe ZIP paths, failed updates, and retaining the previous Git installation.
+- The real bundled Git passes automatic discovery, clone, blank-message commits, push and pull under Wine, including paths containing spaces. A read-only HTTPS check uses the bundled CA certificates. These checks create no cloud commits.
+- The setup executable completed an upgrade in the AD17 Wine prefix. All eight plugin files and all 364 MinGit files matched the packaged bytes; AD17's extension registry records version 0.6.0.0.
+
 ## v0.5.0 active project following
 
 25 October 2026, AD17 17.1 under Wine:

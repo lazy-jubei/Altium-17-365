@@ -2,6 +2,7 @@
 """Deploy a locally built extension into an Altium Wine prefix, with backups."""
 import argparse
 import datetime
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -9,9 +10,19 @@ import shutil
 import tempfile
 import uuid
 import xml.etree.ElementTree as ET
+import zipfile
 
 HRID = 'Altium17-365'
 REQUIRED = ('Altium17-365.dll', 'Altium17-365.Core.dll', 'Altium.Auth.dll', 'Newtonsoft.Json.dll', 'Altium17-365.Ins', 'Altium17-365.rcs', 'Altium17-365.target.json', 'THIRD-PARTY-NOTICES.txt')
+MINGIT_HASH = ET.parse(Path(__file__).resolve().parents[1] / 'Installer/MinGit.props').findtext('PropertyGroup/MinGitSha256')
+
+def validate_git(dist):
+    archive = dist / 'MinGit.zip'
+    if not archive.is_file():
+        raise ValueError('Missing bundled MinGit.zip. Rebuild the installer.')
+    if hashlib.sha256(archive.read_bytes()).hexdigest() != MINGIT_HASH:
+        raise ValueError('Bundled MinGit SHA256 mismatch. Rebuild the installer.')
+    return archive
 
 def validate_target(dist, altium_version):
     if altium_version != '17':
@@ -53,6 +64,8 @@ def deploy(dist, prefix, extensions_root=None, dry_run=False, altium_version='17
     files = [p for p in dist.iterdir() if p.is_file()]
     if any(p.name.startswith(('Altium.', 'DevExpress.')) and p.name != 'Altium.Auth.dll' for p in files):
         raise ValueError('The dist folder must not contain Altium SDK or DevExpress assemblies.')
+    git_archive = validate_git(dist)
+    files = [dist / name for name in REQUIRED]
     root = find_extensions(prefix, extensions_root)
     registry = root / 'ExtensionsRegistry.xml'
     tree = ET.parse(registry)
@@ -75,6 +88,8 @@ def deploy(dist, prefix, extensions_root=None, dry_run=False, altium_version='17
     try:
         for file in files:
             shutil.copy2(file, stage / file.name)
+        with zipfile.ZipFile(git_archive) as git:
+            git.extractall(stage / 'MinGit')
         if existing:
             item = existing[0]
         else:
@@ -97,7 +112,7 @@ def deploy(dist, prefix, extensions_root=None, dry_run=False, altium_version='17
             if platform is None:
                 platform = ET.SubElement(pv, name)
             platform.set('BuildNumber', version)
-        for name, value in [('Path', windows_path(target, prefix)), ('Version', '0.5.0.0')]:
+        for name, value in [('Path', windows_path(target, prefix)), ('Version', '0.6.0.0')]:
             child = item.find(name)
             if child is None:
                 child = ET.SubElement(item, name)

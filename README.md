@@ -11,7 +11,7 @@ A dockable Altium 365 panel for Altium Designer 17.
 
 ## Install
 
-Download [v0.5.0 setup](https://github.com/lazy-jubei/Altium-17-365/releases/download/v0.5.0/Altium-17-365-Setup.exe). Close AD17, run the installer and restart. Requires .NET Framework 4.8 and [Git for Windows](https://gitforwindows.org/); Wine needs Windows `git.exe`.
+Download [v0.6.0 setup](https://github.com/lazy-jubei/Altium-17-365/releases/download/v0.6.0/Altium-17-365-Setup.exe). Close AD17, run the installer and restart. Includes portable Git; no separate Git installation is needed. Requires .NET Framework 4.8.
 
 ## Connect
 
@@ -27,7 +27,7 @@ Open an existing Altium 365 project in AD17; **Synchronize with server** detects
 ./Build.ps1 -AltiumInstallDir 'C:\Program Files (x86)\Altium\AD17'
 ```
 
-On macOS: `bash tools/build-macos.sh`, then `python3 tools/deploy-wine.py` with AD17 closed.
+On macOS: `bash tools/build-macos.sh`, then `python3 tools/deploy-wine.py` with AD17 closed. Builds download a pinned, checksum-verified MinGit archive; setup installs it offline.
 
 Authentication uses Altium's [library](https://github.com/AltiumDeveloper/altium-auth) and the public browser flow from its [VS Code extension](https://marketplace.visualstudio.com/items?itemName=altium.developer). VS Code is not required.
 

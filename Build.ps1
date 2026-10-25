@@ -9,3 +9,4 @@ $dist = New-Item -ItemType Directory -Path "$PSScriptRoot/dist" -Force
 $files = @('Altium17-365.dll', 'Altium17-365.Core.dll', 'Altium.Auth.dll', 'Newtonsoft.Json.dll', 'Altium17-365.Ins', 'Altium17-365.rcs', 'Altium17-365.target.json', 'THIRD-PARTY-NOTICES.txt')
 foreach ($file in $files) { Copy-Item "$PSScriptRoot/Plugin/bin/Release/$file" $dist -Force }
 Copy-Item "$PSScriptRoot/Installer/bin/Release/Altium-17-365-Setup.exe" $dist -Force
+Copy-Item "$PSScriptRoot/Installer/bin/Release/MinGit.zip" "$dist/MinGit.zip" -Force

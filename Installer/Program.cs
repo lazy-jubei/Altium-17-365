@@ -66,7 +66,7 @@ namespace Altium17365Setup
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
-            layout.Controls.Add(new Label { Text = "Install Altium 365 in Altium Designer 17.\nClose Altium before installing, then restart it to use the plugin.", AutoSize = true, Dock = DockStyle.Fill });
+            layout.Controls.Add(new Label { Text = "Install Altium 365 in Altium Designer 17, including portable Git.\nClose Altium before installing, then restart it to use the plugin.", AutoSize = true, Dock = DockStyle.Fill });
             layout.Controls.Add(installations);
             layout.Controls.Add(status);
             var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft };
@@ -109,12 +109,18 @@ namespace Altium17365Setup
                         stream.CopyTo(bytes); payload[name] = bytes.ToArray();
                     }
                 }
-                InstallerCore.Install(selected.Root, payload, assembly.GetName().Version.ToString());
+                install.Enabled = false;
+                status.Text = "Installing plugin and portable Git…";
+                Refresh();
+                string gitHash = assembly.GetCustomAttributes<AssemblyMetadataAttribute>().Single(a => a.Key == "MinGitSha256").Value;
+                using (var git = assembly.GetManifestResourceStream("Payload.MinGit.zip"))
+                    InstallerCore.Install(selected.Root, payload, assembly.GetName().Version.ToString(), git, gitHash);
                 status.Text = "Installed. Restart Altium, then choose Altium 365 (AD17)\nfrom the bottom-right System menu.";
                 install.Enabled = false;
             }
             catch (Exception error)
             {
+                install.Enabled = true;
                 MessageBox.Show(this, error.GetBaseException().Message, "Altium 17 365 Setup", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }

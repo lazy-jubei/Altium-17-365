@@ -45,6 +45,7 @@ namespace Altium17Cloud
             if (Environment.OSVersion.Platform == PlatformID.Win32NT)
             {
                 foreach (var root in new[] {
+                    Path.Combine(Path.GetDirectoryName(typeof(ProcessGitRunner).Assembly.Location), "MinGit"),
                     Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Altium17365", "MinGit"),
                     Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Git"),
                     Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Git"),
@@ -98,7 +99,7 @@ namespace Altium17Cloud
             using (var process = new Process { StartInfo = start })
             {
                 try { process.Start(); }
-                catch (Win32Exception) { throw new GitOperationException("Git could not be started. Install Git for Windows or choose its git.exe in the Git tab."); }
+                catch (Win32Exception) { throw new GitOperationException("Git could not be started. Reinstall the plugin to restore bundled Git, or choose a git.exe under Manual setup."); }
                 using (var tree = new ProcessTree(process))
                 {
                     Action stop = () => { tree.Dispose(); try { process.Kill(); } catch { } };

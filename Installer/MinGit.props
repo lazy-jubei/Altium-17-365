@@ -1,0 +1,21 @@
+<Project>
+  <PropertyGroup>
+    <MinGitVersion>2.56.0.3</MinGitVersion>
+    <MinGitUrl>https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.3/MinGit-2.56.0.3-32-bit.zip</MinGitUrl>
+    <MinGitSha256>eaf8d826a2ff4440db847078424b282d09f9ac9d03524faab8189c279455926d</MinGitSha256>
+    <MinGitArchive>$(MSBuildThisFileDirectory)../.tools/MinGit-$(MinGitVersion)-32-bit.zip</MinGitArchive>
+  </PropertyGroup>
+  <Target Name="PreparePortableGit" BeforeTargets="AssignTargetPaths">
+    <MakeDir Directories="$([System.IO.Path]::GetDirectoryName('$(MinGitArchive)'))" />
+    <DownloadFile SourceUrl="$(MinGitUrl)" DestinationFileName="$(MinGitArchive).download" Condition="!Exists('$(MinGitArchive)')" />
+    <PropertyGroup>
+      <MinGitCandidate Condition="Exists('$(MinGitArchive)')">$(MinGitArchive)</MinGitCandidate>
+      <MinGitCandidate Condition="!Exists('$(MinGitArchive)')">$(MinGitArchive).download</MinGitCandidate>
+    </PropertyGroup>
+    <GetFileHash Files="$(MinGitCandidate)" Algorithm="SHA256">
+      <Output TaskParameter="Hash" PropertyName="MinGitActualHash" />
+    </GetFileHash>
+    <Error Condition="'$(MinGitActualHash)' != '$(MinGitSha256)'" Text="MinGit SHA256 mismatch. Remove $(MinGitCandidate) and rebuild." />
+    <Move SourceFiles="$(MinGitCandidate)" DestinationFiles="$(MinGitArchive)" Condition="'$(MinGitCandidate)' != '$(MinGitArchive)'" />
+  </Target>
+</Project>

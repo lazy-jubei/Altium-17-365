@@ -29,3 +29,5 @@ jobs:
       - run: ./tests/bin/ProjectContextTests/Debug/net48/ProjectContextTests.exe
       - run: dotnet build tests/GitResponsiveness.csproj
       - run: ./tests/bin/GitResponsiveness/Debug/net48/GitResponsiveness.exe
+      - run: dotnet msbuild Installer/Installer.csproj -target:PreparePortableGit
+      - run: dotnet run --project tests/PortableGitTests.csproj -f net8.0 -- Installer/MinGit.props

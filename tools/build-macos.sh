@@ -13,3 +13,4 @@ for file in Altium17-365.dll Altium17-365.Core.dll Altium.Auth.dll Newtonsoft.Js
   cp "$repo_dir/Plugin/bin/Release/$file" "$repo_dir/dist/"
 done
 cp "$repo_dir/Installer/bin/Release/Altium-17-365-Setup.exe" "$repo_dir/dist/"
+cp "$repo_dir/Installer/bin/Release/MinGit.zip" "$repo_dir/dist/MinGit.zip"
