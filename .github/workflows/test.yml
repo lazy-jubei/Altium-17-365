@@ -9,5 +9,19 @@ jobs:
         with:
           dotnet-version: '8.0.x'
       - run: dotnet run --project tests/WorkspaceTests.csproj -f net8.0
+      - run: dotnet run --project tests/GitTests.csproj -f net8.0
       - run: dotnet run --project tests/InstallerTests.csproj
       - run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+  windows-git:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - run: dotnet build tests/GitTests.csproj -f net48
+      - run: ./tests/bin/GitTests/Debug/net48/GitTests.exe
+      - run: dotnet build tests/WorkspaceTests.csproj -f net48
+      - run: ./tests/bin/WorkspaceTests/Debug/net48/WorkspaceTests.exe
+      - run: dotnet build tests/GitResponsiveness.csproj
+      - run: ./tests/bin/GitResponsiveness/Debug/net48/GitResponsiveness.exe

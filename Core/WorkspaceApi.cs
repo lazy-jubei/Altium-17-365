@@ -18,6 +18,7 @@ namespace Altium17Cloud
         public string Id { get; set; }
         public string Name { get; set; }
         public Uri Url { get; set; }
+        public Uri ApiUrl { get; set; }
         public string Location { get; set; }
         public bool IsGovCloud => string.Equals(Location, "US GovCloud", StringComparison.OrdinalIgnoreCase);
     }
@@ -40,10 +41,10 @@ namespace Altium17Cloud
         private readonly HttpClient http;
         public WorkspaceApi(HttpClient http) { this.http = http ?? throw new ArgumentNullException(nameof(http)); }
         public static readonly KeyValuePair<string, string>[] Regions = {
-            new KeyValuePair<string,string>("US West", "https://usw.365.altium.com/api/graphql"),
-            new KeyValuePair<string,string>("US East", "https://use.365.altium.com/api/graphql"),
-            new KeyValuePair<string,string>("Europe", "https://eur.365.altium.com/api/graphql"),
-            new KeyValuePair<string,string>("Asia Pacific", "https://asp.365.altium.com/api/graphql")
+            new KeyValuePair<string,string>("US West", "https://usw.365.altium.com/napi/gateway/graphql"),
+            new KeyValuePair<string,string>("US East", "https://use.365.altium.com/napi/gateway/graphql"),
+            new KeyValuePair<string,string>("Europe", "https://eur.365.altium.com/napi/gateway/graphql"),
+            new KeyValuePair<string,string>("Asia Pacific", "https://asp.365.altium.com/napi/gateway/graphql")
         };
         public static Uri WorkspaceUrl(string input)
         {
@@ -56,11 +57,19 @@ namespace Altium17Cloud
             return new Uri(uri.GetLeftPart(UriPartial.Authority) + "/");
         }
         public static Uri Endpoint(Uri workspace) => new Uri(WorkspaceUrl(workspace?.AbsoluteUri), "api/graphql");
+        public static Uri ValidateEndpoint(Uri endpoint)
+        {
+            if (endpoint == null || !endpoint.IsAbsoluteUri || endpoint.Scheme != Uri.UriSchemeHttps ||
+                !endpoint.Host.EndsWith(".altium.com", StringComparison.OrdinalIgnoreCase) || !endpoint.IsDefaultPort ||
+                !string.IsNullOrEmpty(endpoint.UserInfo) || !string.IsNullOrEmpty(endpoint.Query) || !string.IsNullOrEmpty(endpoint.Fragment) ||
+                (endpoint.AbsolutePath != "/api/graphql" && endpoint.AbsolutePath != "/napi/gateway/graphql"))
+                throw new ArgumentException("Unsupported Altium API endpoint.");
+            return endpoint;
+        }
         private async Task<JObject> QueryAsync(Uri endpoint, string token, string query, JObject variables, CancellationToken cancellation)
         {
             if (string.IsNullOrWhiteSpace(token) || token.Any(char.IsWhiteSpace)) throw new ArgumentException("Enter a workspace access token.");
-            if (endpoint.Scheme != Uri.UriSchemeHttps || !endpoint.Host.EndsWith(".altium.com", StringComparison.OrdinalIgnoreCase) || !endpoint.IsDefaultPort || !string.IsNullOrEmpty(endpoint.UserInfo))
-                throw new ArgumentException("Unsupported Altium API endpoint.");
+            ValidateEndpoint(endpoint);
             var payload = new JObject { ["query"] = query };
             if (variables != null) payload["variables"] = variables;
             using (var request = new HttpRequestMessage(HttpMethod.Post, endpoint))
@@ -100,17 +109,22 @@ namespace Altium17Cloud
         public async Task<List<Workspace>> DiscoverAsync(string region, string token, CancellationToken cancellation)
         {
             if (!Regions.Any(r => r.Value == region)) throw new ArgumentException("Select an Altium 365 region.");
-            var data = await QueryAsync(new Uri(region), token, "query { desWorkspaceInfos { authId name url location { name } } }", null, cancellation).ConfigureAwait(false);
+            var data = await QueryAsync(new Uri(region), token, "query { desWorkspaceInfos { authId name url location { apiServiceUrl } } }", null, cancellation).ConfigureAwait(false);
             var array = data["desWorkspaceInfos"] as JArray ?? throw new InvalidOperationException("The API returned no workspace list.");
-            return array.Select(w => new Workspace { Id = (string)w["authId"], Name = (string)w["name"], Url = WorkspaceUrl((string)w["url"]), Location = (string)w["location"]?["name"] }).ToList();
+            return array.Select(w => new Workspace { Id = (string)w["authId"], Name = (string)w["name"], Url = WorkspaceUrl((string)w["url"]), Location = (string)w["location"]?["name"],
+                ApiUrl = string.IsNullOrWhiteSpace((string)w["location"]?["apiServiceUrl"]) ? null : ValidateEndpoint(new Uri((string)w["location"]["apiServiceUrl"])) }).ToList();
         }
-        public async Task<ProjectPage> ProjectsAsync(Uri workspace, string token, string cursor, CancellationToken cancellation)
+        public Task<ProjectPage> ProjectsAsync(Uri workspace, string token, string cursor, CancellationToken cancellation) =>
+            ProjectsAtAsync(Endpoint(workspace), token, cursor, cancellation);
+        public Task<ProjectPage> ProjectsAsync(Workspace workspace, string token, string cursor, CancellationToken cancellation) =>
+            ProjectsAtAsync(ValidateEndpoint(workspace.ApiUrl ?? Endpoint(workspace.Url)), token, cursor, cancellation);
+        private async Task<ProjectPage> ProjectsAtAsync(Uri endpoint, string token, string cursor, CancellationToken cancellation)
         {
             var variables = new JObject();
             string query = cursor == null ? "query { desProjects(first: 50) { nodes { id name description repositoryUrl } pageInfo { hasNextPage endCursor } } }" :
                 "query Projects($after: String!) { desProjects(first: 50, after: $after) { nodes { id name description repositoryUrl } pageInfo { hasNextPage endCursor } } }";
             if (cursor != null) variables["after"] = cursor;
-            var data = await QueryAsync(Endpoint(workspace), token, query, variables, cancellation).ConfigureAwait(false);
+            var data = await QueryAsync(endpoint, token, query, variables, cancellation).ConfigureAwait(false);
             var connection = data["desProjects"] as JObject ?? throw new InvalidOperationException("The API returned no project connection.");
             var nodes = connection["nodes"] as JArray ?? throw new InvalidOperationException("The API returned no project list.");
             var info = connection["pageInfo"] as JObject ?? throw new InvalidOperationException("The API returned no pagination information.");
