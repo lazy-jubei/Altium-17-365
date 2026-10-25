@@ -186,12 +186,26 @@ internal static class Program
         string project = NewProjectFiles.Write(copy, "Board");
         await Reject(() => Task.FromResult(NewProjectFiles.Write(copy, "Board")), "blank project creation never overwrites an existing file");
         Require(File.ReadAllText(project) == "[Design]\r\nVersion=1.0\r\n", "blank projects contain only new Altium project settings");
+        string[] generated = { "__Previews/Board.png", "nested/__Previews/Board.png", "History/Board.PcbDoc", "nested/History/Board.SchDoc",
+            "Project Logs Board/log.txt", "nested/Project Outputs Board/Board.Gerber", "Board.PcbDoc.htm", "Libraries/Access.ldb",
+            "Board.PcbDoc.metadata", "Board.PrjPcbStructure", "Board.PrjMbdStructure", "CompareHistory/result.txt", "Board-EDM/Board.x_t" };
+        foreach (string file in generated)
+        {
+            string local = Path.Combine(copy, file); Directory.CreateDirectory(Path.GetDirectoryName(local)); File.WriteAllText(local, "generated");
+        }
+        string[] source = { "Board.PrjPcb", "Board.SchDoc", "Board.PcbDoc", "Board.SchLib", "Board.PcbLib", "Models/Board.step", ".gitignore" };
+        var ignored = (await Plain(copy, new[] { "check-ignore", "--no-index", "--" }.Concat(generated).Concat(source).ToArray())).Output
+            .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+        Require(ignored.OrderBy(x => x).SequenceEqual(generated.OrderBy(x => x)), "new projects ignore AD26 generated outputs while preserving design files and models");
         File.WriteAllText(Path.Combine(copy, "Other.txt"), "leave staged"); await Plain(copy, "add", "Other.txt");
-        await git.SaveToServerAsync(Remote, copy, new[] { "Board.PrjPcb" }, "", Token, None);
+        await git.SaveToServerAsync(Remote, copy, new[] { "Board.PrjPcb", ".gitignore" }, "", Token, None);
         Require((await Plain(copy, "log", "-1", "--format=%B")).Output.Trim().Length == 0, "first commit supports an empty comment");
         Require((await Plain(copy, "diff", "--cached", "--name-only")).Output.Trim() == "Other.txt", "initial selected-file save preserves unrelated staged files");
         await git.CloneAsync(Remote, second, Token, None);
-        Require(File.Exists(Path.Combine(second, "Board.PrjPcb")) && !File.Exists(Path.Combine(second, "Other.txt")), "fresh clone retrieves only the new project's selected source files");
+        Require(File.Exists(Path.Combine(second, "Board.PrjPcb")) && File.ReadAllBytes(Path.Combine(second, ".gitignore")).SequenceEqual(File.ReadAllBytes(Path.Combine(copy, ".gitignore"))) && !File.Exists(Path.Combine(second, "Other.txt")), "fresh clone retrieves only the new project's selected source files");
+        File.WriteAllText(Path.Combine(copy, ".gitignore"), "# custom rules\n*.custom\n");
+        NewProjectFiles.Write(copy, "Another board");
+        Require(File.ReadAllText(Path.Combine(copy, ".gitignore")) == "# custom rules\n*.custom\n", "project creation preserves existing custom ignore rules");
     }
     static async Task ServerSaveChecks(string root, string bare)
     {

@@ -1,5 +1,9 @@
 # Verification
 
+## v0.3.1 project ignore rules
+
+New empty projects receive the same `.gitignore` as the tested AD26 working copy, including MCAD export caches. Real Git tests cover generated files, nested directories, retained design files and models, clone persistence and preservation of custom ignore rules. The matching file was uploaded through AD17 Save to Server with an empty comment, then verified in an independent checkout; the isolated project has five blank-message commits of the ten allowed.
+
 ## v0.3.0 project creation and blank comments
 
 24 October 2026:

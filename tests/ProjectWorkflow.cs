@@ -65,7 +65,7 @@ internal static class ProjectWorkflow
             string path = Path.Combine(a, "ConnectivityTest.txt");
             if (phase == 3) File.Delete(path); else File.WriteAllText(path, "Altium 17 workspace test, revision " + phase + ".\r\n");
             var status = await git.StatusAsync(project.RepositoryUrl, a, ct);
-            var selected = status.Changes.Where(c => c.Path == "ConnectivityTest.txt" || (phase == 1 && c.Path == (string)state["name"] + ".PrjPcb")).Select(c => c.Path).ToArray();
+            var selected = status.Changes.Where(c => c.Path == "ConnectivityTest.txt" || (phase == 1 && (c.Path == (string)state["name"] + ".PrjPcb" || c.Path == ".gitignore"))).Select(c => c.Path).ToArray();
             if (selected.Length > 0)
             {
                 if ((int)state["attempts"] >= 10) throw new InvalidOperationException("The live test has reached its ten-commit limit.");

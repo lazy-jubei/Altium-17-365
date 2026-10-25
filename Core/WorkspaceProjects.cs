@@ -23,6 +23,10 @@ namespace Altium17Cloud
             string path = System.IO.Path.Combine(System.IO.Path.GetFullPath(folder), WorkspaceApi.ProjectName(name) + ".PrjPcb");
             using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             using (var writer = new StreamWriter(stream, new UTF8Encoding(false))) writer.Write("[Design]\r\nVersion=1.0\r\n");
+            string ignore = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(path), ".gitignore");
+            if (!File.Exists(ignore))
+                using (var template = typeof(NewProjectFiles).Assembly.GetManifestResourceStream("Altium17Cloud.Project.gitignore"))
+                using (var target = new FileStream(ignore, FileMode.CreateNew, FileAccess.Write, FileShare.None)) template.CopyTo(target);
             return path;
         }
     }
