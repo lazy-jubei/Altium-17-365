@@ -1,5 +1,17 @@
 # Verification
 
+## v0.4.0 pull/push and conflict review
+
+25 October 2026, AD17 17.1 under Wine:
+
+- Background fetch downloaded a server revision and showed a possible-conflict warning without changing the local HEAD or saved file. Cancelling the native pull review also left both unchanged.
+- With two test projects open from separate checkouts, automatic scans checked both at 01:44:23 and 01:46:20, 117 seconds apart, without desktop input. The primary checkout stayed clean. The schedule is enabled by default while connected.
+- Choosing **Local** kept the exact saved local bytes while advancing the downloaded history. Choosing **Server** in a second checkout installed the cloud bytes and refreshed the open AD17 editor. Both operations used the native panel and its owned conflict dialog.
+- **Commit selected** with a blank comment, followed by **Push changes**, uploaded the retained local version. An independent authenticated pull matched the revision and file bytes. The isolated test project has seven commits, all with empty messages, within the ten-commit limit.
+- 109 real-Git and scheduling checks pass on .NET 8. The Wine/.NET Framework 4.8 run passed 105 checks before four additional scheduling/path checks were added. Coverage includes binary and Unicode files, staged versus unstaged changes, ignored/untracked collisions, deletions, file/folder conflicts, stale reviews, another process's index lock, recovery snapshots and blank-message merge commits.
+- All 22 native WinForms conflict-dialog checks pass under Wine, including minimum-size layout, DPI-scaled headers, visible version choices and requiring an explicit choice for every conflict. No parent-window exception appeared in the live reviews.
+- The 101 workspace/API checks, 18 installer checks and six deployment checks pass. These tests use fixtures; live cloud and native AD17 checks are identified separately above.
+
 ## v0.3.1 project ignore rules
 
 New empty projects receive the same `.gitignore` as the tested AD26 working copy, including MCAD export caches. Real Git tests cover generated files, nested directories, retained design files and models, clone persistence and preservation of custom ignore rules. The matching file was uploaded through AD17 Save to Server with an empty comment, then verified in an independent checkout; the isolated project has five blank-message commits of the ten allowed.

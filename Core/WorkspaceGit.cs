@@ -15,6 +15,7 @@ namespace Altium17Cloud
     public sealed class GitCommand
     {
         public string WorkingDirectory { get; set; }
+        public string Input { get; set; }
         public List<string> Arguments { get; } = new List<string>();
         public Dictionary<string, string> Environment { get; } = new Dictionary<string, string>();
     }
@@ -99,7 +100,6 @@ namespace Altium17Cloud
             {
                 try { process.Start(); }
                 catch (Win32Exception) { throw new GitOperationException("Git could not be started. Install Git for Windows or choose its git.exe in the Git tab."); }
-                process.StandardInput.Close();
                 using (var tree = new ProcessTree(process))
                 {
                     Action stop = () => { tree.Dispose(); try { process.Kill(); } catch { } };
@@ -113,12 +113,20 @@ namespace Altium17Cloud
                         {
                             var output = ReadAsync(process.StandardOutput, stop);
                             var error = ReadAsync(process.StandardError, stop);
+                            var input = process.StandardInput.BaseStream;
+                            if (command.Input != null)
+                            {
+                                byte[] bytes = Encoding.UTF8.GetBytes(command.Input);
+                                await input.WriteAsync(bytes, 0, bytes.Length).ConfigureAwait(false);
+                            }
+                            input.Close();
                             await Task.Run(() => process.WaitForExit()).ConfigureAwait(false);
                             string[] streams = await Task.WhenAll(output, error).ConfigureAwait(false);
                             cancellation.ThrowIfCancellationRequested();
                             return new GitResult { ExitCode = process.ExitCode, Output = streams[0], Error = streams[1] };
                         }
                         catch (Exception) when (cancellation.IsCancellationRequested) { throw new OperationCanceledException(cancellation); }
+                        catch { stop(); throw; }
                     }
                 }
             }
@@ -189,8 +197,11 @@ namespace Altium17Cloud
         public bool IsUnborn { get; set; }
         public int OutgoingCommits { get; set; }
         public int IncomingCommits { get; set; }
+        public string ServerRevision { get; set; }
         public bool HasPendingSave => Changes.Count > 0 || OutgoingCommits > 0;
+        public bool HasConflicts => Changes.Any(c => c.Status.Contains("U") || c.Status == "AA" || c.Status == "DD");
         public List<GitChange> Changes { get; } = new List<GitChange>();
+        public List<string> PotentialConflicts { get; } = new List<string>();
     }
     public sealed class ServerSaveException : InvalidOperationException
     {
@@ -198,6 +209,11 @@ namespace Altium17Cloud
     }
     public static class WorkingCopyPath
     {
+        public static string Root(string folder)
+        {
+            string full = Path.GetFullPath(folder);
+            return full.Length > Path.GetPathRoot(full).Length ? full.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) : full;
+        }
         public static bool Contains(string folder, string file)
         {
             if (string.IsNullOrWhiteSpace(folder) || string.IsNullOrWhiteSpace(file) || !Path.IsPathRooted(file)) return false;
@@ -212,7 +228,7 @@ namespace Altium17Cloud
             catch (PathTooLongException) { return false; }
         }
     }
-    public sealed class WorkspaceGit
+    public sealed partial class WorkspaceGit
     {
         private readonly IGitRunner runner;
         public WorkspaceGit(IGitRunner runner) { this.runner = runner ?? throw new ArgumentNullException(nameof(runner)); }
@@ -269,10 +285,10 @@ namespace Altium17Cloud
             if (result.ExitCode == 0) return result;
             string detail = (result.Error + "\n" + result.Output).ToLowerInvariant();
             // Remote errors can contain credentials or response bodies: never display them verbatim.
-            if (detail.Contains("authentication") || detail.Contains("401") || detail.Contains("403"))
+            if (detail.Contains("authentication") || Regex.IsMatch(detail, @"\b(401|403)\b", RegexOptions.CultureInvariant))
                 throw new GitOperationException("Git authentication failed. Supply a fresh token for this Workspace and check project access.");
             if (detail.Contains("non-fast-forward") || detail.Contains("not possible to fast-forward") || detail.Contains("fetch first"))
-                throw new GitOperationException("Local and remote commits need reconciliation. Use an external Git client to review them; no force push or automatic merge was attempted.");
+                throw new GitOperationException("Local and server commits need reconciliation. Use Pull changes to review Local and Server versions, then retry Push changes. No force push was attempted.");
             if (detail.Contains("identity unknown") || detail.Contains("empty ident") || detail.Contains("unable to auto-detect email"))
                 throw new GitOperationException("Configure your Git author name and email, then commit again.");
             if (detail.Contains("could not resolve") || detail.Contains("failed to connect") || detail.Contains("ssl certificate"))
@@ -337,7 +353,9 @@ namespace Altium17Cloud
             var branch = await RunAsync(Command(folder, new[] { "symbolic-ref", "--quiet", "--short", "HEAD" }), cancellation).ConfigureAwait(false);
             var status = new GitStatus { Branch = branch.Output.Trim(), IsUnborn = !await HasHeadAsync(folder, cancellation).ConfigureAwait(false) };
             var tracking = await RunAsync(Command(folder, new[] { "for-each-ref", "--format=%(objectname)", "refs/remotes/origin/master" }), cancellation).ConfigureAwait(false);
-            var counts = status.IsUnborn ? new GitResult { Output = "0" } : await RunAsync(Command(folder, tracking.Output.Trim().Length == 0 ?
+            status.ServerRevision = tracking.Output.Trim();
+            var counts = status.IsUnborn ? new GitResult { Output = "0 " + (tracking.Output.Trim().Length == 0 ? "0" :
+                (await RunAsync(Command(folder, new[] { "rev-list", "--count", "refs/remotes/origin/master" }), cancellation).ConfigureAwait(false)).Output.Trim()) } : await RunAsync(Command(folder, tracking.Output.Trim().Length == 0 ?
                 new[] { "rev-list", "--count", "HEAD" } :
                 new[] { "rev-list", "--count", "--left-right", "HEAD...refs/remotes/origin/master" }), cancellation).ConfigureAwait(false);
             var parts = counts.Output.Trim().Split(new[] { '\t', ' ' }, StringSplitOptions.RemoveEmptyEntries);
@@ -394,6 +412,7 @@ namespace Altium17Cloud
         public async Task CommitAsync(string remote, string folder, IEnumerable<string> selectedPaths, string message, CancellationToken cancellation)
         {
             var status = await MasterAsync(remote, folder, cancellation).ConfigureAwait(false);
+            if (status.HasConflicts) throw new GitOperationException("Resolve the existing merge conflicts before committing project files.");
             var chosen = (selectedPaths ?? Array.Empty<string>()).Distinct(StringComparer.Ordinal).ToArray();
             var changed = new HashSet<string>(status.Changes.SelectMany(c => c.OriginalPath == null || !c.Status.Contains("R") ? new[] { c.Path } : new[] { c.Path, c.OriginalPath }), StringComparer.Ordinal);
             if (chosen.Length == 0 || chosen.Any(p => !changed.Contains(p))) throw new ArgumentException("Select changed files to commit, then refresh if their status has changed.");
@@ -409,7 +428,7 @@ namespace Altium17Cloud
             Command(Folder(folder), Array.Empty<string>(), remote, token);
             var status = await MasterAsync(remote, folder, cancellation).ConfigureAwait(false);
             var chosen = (selectedPaths ?? Array.Empty<string>()).Distinct(StringComparer.Ordinal).ToArray();
-            if (status.Changes.Any(c => c.Status.Contains("U") || c.Status == "AA" || c.Status == "DD"))
+            if (status.HasConflicts)
                 throw new GitOperationException("Resolve the working copy's merge conflicts with an external Git client before saving to the server.");
             if (chosen.Length > 0) await CommitAsync(remote, folder, chosen, message, cancellation).ConfigureAwait(false);
             else if (status.OutgoingCommits == 0) throw new ArgumentException("Select changed files to save to the server.");

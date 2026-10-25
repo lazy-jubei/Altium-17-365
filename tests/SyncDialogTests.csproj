@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net48</TargetFramework><PlatformTarget>x86</PlatformTarget><LangVersion>12</LangVersion><EnableDefaultCompileItems>false</EnableDefaultCompileItems><UseWindowsForms>true</UseWindowsForms><EnableWindowsTargeting>true</EnableWindowsTargeting></PropertyGroup>
+  <ItemGroup><Compile Include="SyncDialogTests.cs"/><Compile Include="../Plugin/PullChangesDialog.cs" Link="PullChangesDialog.cs"/><ProjectReference Include="../Core/Altium17-365.Core.csproj"/><PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" Version="1.0.3" PrivateAssets="all"/></ItemGroup>
+</Project>

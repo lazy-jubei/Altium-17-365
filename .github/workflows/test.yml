@@ -23,5 +23,7 @@ jobs:
       - run: ./tests/bin/GitTests/Debug/net48/GitTests.exe
       - run: dotnet build tests/WorkspaceTests.csproj -f net48
       - run: ./tests/bin/WorkspaceTests/Debug/net48/WorkspaceTests.exe
+      - run: dotnet build tests/SyncDialogTests.csproj
+      - run: ./tests/bin/SyncDialogTests/Debug/net48/SyncDialogTests.exe
       - run: dotnet build tests/GitResponsiveness.csproj
       - run: ./tests/bin/GitResponsiveness/Debug/net48/GitResponsiveness.exe

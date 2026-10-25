@@ -1,4 +1,4 @@
-// Interactive integration check; writes require --exercise-new-project and use a new test project only.
+// Interactive integration check; writes require an explicit exercise flag and use an isolated test project only.
 using Altium17Cloud;
 using System;
 using System.Diagnostics;
@@ -12,7 +12,8 @@ static class Program
 {
     static async Task<int> Main(string[] args)
     {
-        using (var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(args.Contains("--exercise-new-project") ? 15 : 5)))
+        bool exercise = args.Contains("--exercise-new-project") || args.Contains("--exercise-sync-server");
+        using (var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(exercise ? 15 : 5)))
         using (var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false, SslProtocols = SslProtocols.Tls12 }) { Timeout = TimeSpan.FromSeconds(45) })
         using (var auth = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false, SslProtocols = SslProtocols.Tls12 }) { Timeout = Timeout.InfiniteTimeSpan })
         {
@@ -26,13 +27,19 @@ static class Program
                 Console.WriteLine("Browser sign-in succeeded; workspaces: " + workspaces.Count);
                 if (workspaces.Count == 0) return 1;
                 var first = await session.ConnectAsync(workspaces[0], null, deadline.Token);
-                var all = args.Contains("--exercise-new-project") ? first.Projects : await session.AllProjectsAsync(first, null, deadline.Token);
-                Console.WriteLine("Workspace token exchange succeeded; " + (args.Contains("--exercise-new-project") ? "first-page projects: " : "projects: ") + all.Count);
-                int exercise = Array.IndexOf(args, "--exercise-new-project");
-                if (exercise >= 0)
+                var all = exercise ? first.Projects : await session.AllProjectsAsync(first, null, deadline.Token);
+                Console.WriteLine("Workspace token exchange succeeded; " + (exercise ? "first-page projects: " : "projects: ") + all.Count);
+                int create = Array.IndexOf(args, "--exercise-new-project");
+                if (create >= 0)
                 {
-                    if (exercise + 1 >= args.Length) throw new ArgumentException("Supply a new evidence folder after --exercise-new-project.");
-                    await ProjectWorkflow.RunAsync(session, args[exercise + 1], deadline.Token);
+                    if (create + 1 >= args.Length) throw new ArgumentException("Supply a new evidence folder after --exercise-new-project.");
+                    await ProjectWorkflow.RunAsync(session, args[create + 1], deadline.Token);
+                }
+                int sync = Array.IndexOf(args, "--exercise-sync-server");
+                if (sync >= 0)
+                {
+                    if (sync + 1 >= args.Length) throw new ArgumentException("Supply the existing isolated test evidence folder.");
+                    await ProjectWorkflow.SyncServerAsync(session, args[sync + 1], deadline.Token);
                 }
                 if (args.Contains("--project-folders"))
                 {

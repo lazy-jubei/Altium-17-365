@@ -40,7 +40,17 @@ namespace Altium17Cloud
         private readonly TextBox gitRemote = new TextBox(), gitFolder = new TextBox(), gitExecutable = new TextBox(), gitReference = new TextBox(), commitMessage = new TextBox();
         private readonly PasswordBox gitToken = new PasswordBox();
         private readonly TextBlock gitSummary = Label("Choose a project or enter its repository URL, then clone or select a working copy.");
-        private readonly Button useProject = Button("Use selected project"), clone = Button("Clone"), gitRefresh = Button("Refresh status"), pull = Button("Pull"), push = Button("Push"), commit = Button("Commit selected"), openProject = Button("Open project");
+        private readonly Button useProject = Button("Use selected project"), clone = Button("Clone"), gitRefresh = Button("Refresh status"), pull = Button("Pull changes…"), push = Button("Push changes"), commit = Button("Commit selected"), openProject = Button("Open project");
+        private readonly Button fetch = Button("Fetch now");
+        private readonly TextBlock fetchNotice = Label("Background fetch checks open projects every two minutes when connected.");
+        private readonly BackgroundFetchSchedule fetchSchedule = new BackgroundFetchSchedule();
+        private DateTime lastFetchScan = DateTime.MinValue;
+        private readonly Dictionary<string, string[]> fetchWarnings = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, string> serverNotices = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, string> fetchErrors = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private string fetchScanError;
+        private DateTime lastFetchCompleted = DateTime.MinValue;
+        private int lastFetchCount;
         private readonly Button createProject = Button("Create project…");
         private readonly Button saveToServer = Button("Save to Server…");
         private readonly ObservableCollection<GitChange> changes = new ObservableCollection<GitChange>();
@@ -90,7 +100,7 @@ namespace Altium17Cloud
             DockPanel.SetDock(logout, Dock.Right); header.Children.Add(logout); header.Children.Add(connection);
             DockPanel.SetDock(header, Dock.Top); layout.Children.Add(header);
             logout.Click += (_, __) => LogOut();
-            var footer = new StackPanel(); footer.Children.Add(status); footer.Children.Add(cancel);
+            var footer = new StackPanel(); footer.Children.Add(fetchNotice); footer.Children.Add(status); footer.Children.Add(cancel);
             DockPanel.SetDock(footer, Dock.Bottom); layout.Children.Add(footer);
             layout.Children.Add(tabs); Content = layout;
             cancel.Visibility = Visibility.Collapsed; cancel.HorizontalAlignment = HorizontalAlignment.Left;
@@ -245,7 +255,7 @@ namespace Altium17Cloud
             saveToServer.FontWeight = FontWeights.SemiBold;
             saveToServer.Background = new SolidColorBrush(Color.FromRgb(24, 91, 153)); saveToServer.Foreground = Brushes.White;
             settings.Children.Add(saveToServer);
-            foreach (var button in new[] { clone, gitRefresh, pull, push, openProject }) buttons.Children.Add(button);
+            foreach (var button in new[] { clone, gitRefresh, fetch, pull, push, openProject }) buttons.Children.Add(button);
             settings.Children.Add(buttons); settings.Children.Add(gitSummary);
             DockPanel.SetDock(settings, Dock.Top); layout.Children.Add(settings);
             var commitArea = new StackPanel();
@@ -273,18 +283,23 @@ namespace Altium17Cloud
                 SaveSettings(); status.Text = "Project cloned. Open it to begin editing.";
             }, "Cloning project…", TimeSpan.FromHours(1));
             gitRefresh.Click += async (_, __) => await RunAsync(async ct => { await RefreshGitAsync(ct); SaveSettings(); status.Text = "Working-copy status refreshed."; }, "Reading working-copy status…");
+            fetch.Click += async (_, __) => await RunAsync(async ct =>
+            {
+                var result = await Git().FetchAsync(gitRemote.Text, gitFolder.Text, await GitTokenAsync(ct), ct);
+                RecordFetch(gitFolder.Text, result);
+                await RefreshGitAsync(ct); UpdateGitSummary();
+                status.Text = "Server changes fetched. Local documents were not replaced.";
+            }, "Fetching server changes…");
             pull.Click += async (_, __) => await RunAsync(async ct =>
             {
-                if (MessageBox.Show("Save and close this working copy's project documents in Altium before pulling. Continue after closing them?", "Pull from Altium 365", MessageBoxButton.OKCancel, MessageBoxImage.Information, MessageBoxResult.Cancel) != MessageBoxResult.OK)
-                { status.Text = "Pull cancelled."; return; }
-                await Git().PullAsync(gitRemote.Text, gitFolder.Text, await GitTokenAsync(ct), ct);
-                await RefreshGitAsync(ct); status.Text = "Working copy updated. Reopen any project documents already open in Altium to read the updated files.";
-            }, "Pulling project…");
+                if (await PullChangesAsync(ct)) { await RefreshGitAsync(ct); status.Text = "Project changes pulled."; }
+            }, "Reviewing server changes…");
             push.Click += async (_, __) => await RunAsync(async ct =>
             {
+                if (!await PullChangesAsync(ct)) return;
                 await Git().PushAsync(gitRemote.Text, gitFolder.Text, await GitTokenAsync(ct), ct);
                 await RefreshGitAsync(ct); status.Text = "Commits pushed to the Workspace's master branch.";
-            }, "Pushing project…");
+            }, "Preparing push…");
             commit.Click += async (_, __) => await RunAsync(async ct =>
             {
                 changesGrid.CommitEdit(DataGridEditingUnit.Cell, true); changesGrid.CommitEdit(DataGridEditingUnit.Row, true);
@@ -308,9 +323,11 @@ namespace Altium17Cloud
         private WorkspaceGit Git() => new WorkspaceGit(new ProcessGitRunner(gitExecutable.Text));
         private void LogOut()
         {
+            monitorCancellation?.Cancel(); fetchSchedule.Clear(); serverNotices.Clear(); fetchWarnings.Clear(); fetchErrors.Clear(); fetchScanError = null; lastFetchScan = lastFetchCompleted = DateTime.MinValue;
             session.Disconnect(); accessToken.Clear(); gitToken.Clear(); gitProject = null; gitWorkspace = null; workspaces.ItemsSource = null;
             projects.Clear(); projectSearch.Clear(); ApplyProjectFilter(); tabs.SelectedIndex = 0;
             status.Text = "Logged out. Session and Git credentials cleared."; UpdateState();
+            fetchNotice.Text = "Background fetch resumes when connected.";
         }
         private async Task<string> GitTokenAsync(CancellationToken cancellation)
         {
@@ -324,6 +341,7 @@ namespace Altium17Cloud
         }
         private void ClearWorkingStatus()
         {
+            lastFetchScan = DateTime.MinValue;
             workingStatus = null; changes.Clear(); unsavedDocuments = 0; gitSummary.Text = "Clone the project or refresh the selected working copy.";
             ConfigureWatcher(); UpdateState();
         }
@@ -335,6 +353,9 @@ namespace Altium17Cloud
             changesGrid.CommitEdit(DataGridEditingUnit.Cell, true); changesGrid.CommitEdit(DataGridEditingUnit.Row, true);
             var selections = changes.ToDictionary(c => c.Path, c => c.Selected, StringComparer.Ordinal);
             workingStatus = result;
+            string key = WorkingCopyPath.Root(folder);
+            if (result.IncomingCommits == 0) { fetchWarnings.Remove(key); serverNotices.Remove(key); RenderFetchNotice(); }
+            else if (fetchWarnings.TryGetValue(key, out var warnings)) result.PotentialConflicts.AddRange(warnings);
             changes.Clear();
             foreach (var change in result.Changes) { change.Selected = !selections.TryGetValue(change.Path, out bool selected) || selected; changes.Add(change); }
             lastStatusRead = DateTime.UtcNow; ReadEditorState(); UpdateGitSummary();
@@ -359,7 +380,9 @@ namespace Altium17Cloud
         private void UpdateGitSummary()
         {
             if (workingStatus == null) return;
-            gitSummary.Text = "Branch: " + workingStatus.Branch + " · " + changes.Count + " changed files · " + workingStatus.OutgoingCommits + " commits waiting to upload" +
+            gitSummary.Text = "Branch: " + workingStatus.Branch + " · " + changes.Count + " changed files · " + workingStatus.OutgoingCommits + " commits waiting to upload · " + workingStatus.IncomingCommits + " server commits to pull" +
+                (workingStatus.HasConflicts ? " · unresolved merge conflicts" : "") +
+                (workingStatus.PotentialConflicts.Count > 0 ? " · " + workingStatus.PotentialConflicts.Count + " possible file conflicts — review Pull changes" : "") +
                 (unsavedDocuments > 0 ? " · " + unsavedDocuments + " unsaved documents" : "") + "." +
                 (!editorStateAvailable ? " Altium's document state is unavailable; Save to Server is disabled." : "");
         }
@@ -371,7 +394,7 @@ namespace Altium17Cloud
             {
                 WorkspaceGit.ValidateRemote(gitRemote.Text);
                 if (!Directory.Exists(gitFolder.Text) || (!Directory.Exists(Path.Combine(gitFolder.Text, ".git")) && !File.Exists(Path.Combine(gitFolder.Text, ".git")))) return;
-                string root = Path.GetFullPath(gitFolder.Text); monitorFolder = root; statusRequested = true;
+                string root = WorkingCopyPath.Root(gitFolder.Text); monitorFolder = root; statusRequested = true;
                 watcher = new FileSystemWatcher(root) { IncludeSubdirectories = true, NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite | NotifyFilters.Size };
                 watcher.Changed += (_, e) => QueueFileChange(root, e.FullPath); watcher.Created += (_, e) => QueueFileChange(root, e.FullPath);
                 watcher.Deleted += (_, e) => QueueFileChange(root, e.FullPath); watcher.Renamed += (_, e) => { QueueFileChange(root, e.OldFullPath); QueueFileChange(root, e.FullPath); };
@@ -389,18 +412,127 @@ namespace Altium17Cloud
         }
         private async Task MonitorAsync()
         {
-            if (disposed || operation != null || monitoring || monitorFolder == null) return;
+            if (disposed || operation != null || monitoring) return;
             ReadEditorState(); UpdateGitSummary(); UpdateState();
-            if (!statusRequested && DateTime.UtcNow - lastStatusRead < TimeSpan.FromSeconds(30)) return;
+            bool fetchDue = (session.Connected != null || gitToken.Password.Length > 0) && DateTime.UtcNow - lastFetchScan >= BackgroundFetchSchedule.Interval;
+            if (!fetchDue && (monitorFolder == null || (!statusRequested && DateTime.UtcNow - lastStatusRead < TimeSpan.FromSeconds(30)))) return;
             statusRequested = false; monitoring = true; UpdateState();
             try
             {
-                using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(25)))
-                { monitorCancellation = timeout; await RefreshGitAsync(timeout.Token); }
+                using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90)))
+                {
+                    monitorCancellation = timeout;
+                    if (fetchDue) await FetchOpenProjectsAsync(timeout.Token);
+                    if (monitorFolder != null) await RefreshGitAsync(timeout.Token);
+                }
             }
-            catch (OperationCanceledException) { }
-            catch { if (!disposed) { workingStatus = null; changes.Clear(); gitSummary.Text = "Unable to refresh the working copy. Choose Refresh status before saving to the server."; lastStatusRead = DateTime.UtcNow; } }
+            catch (OperationCanceledException) { if (fetchDue) lastFetchScan = DateTime.MinValue; }
+            catch (Exception e)
+            {
+                if (!disposed)
+                {
+                    if (fetchDue) { fetchScanError = "Background fetch unavailable: " + FriendlyError(e) + " Retrying in two minutes."; RenderFetchNotice(); }
+                    workingStatus = null; changes.Clear(); gitSummary.Text = "Unable to refresh the working copy. Choose Refresh status before saving to the server."; lastStatusRead = DateTime.UtcNow;
+                }
+            }
             finally { monitorCancellation = null; monitoring = false; if (!disposed) UpdateState(); }
+        }
+        private async Task FetchOpenProjectsAsync(CancellationToken ct)
+        {
+            lastFetchScan = DateTime.UtcNow; fetchScanError = null;
+            fetchNotice.Text = "Checking open projects for server changes…";
+            string[] open;
+            try { open = documents == null ? Array.Empty<string>() : documents.ProjectFiles().Concat(documents.OpenFiles()).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(); }
+            catch { open = Array.Empty<string>(); fetchScanError = "Open project detection is unavailable. The selected working copy is still checked."; }
+            string selectedFolder = gitFolder.Text, selectedRemote = gitRemote.Text;
+            var roots = await Task.Run(() =>
+            {
+                var folders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (string file in open)
+                {
+                    var directory = new DirectoryInfo(Path.GetDirectoryName(file));
+                    while (directory != null)
+                    {
+                        string git = Path.Combine(directory.FullName, ".git");
+                        if (File.Exists(git) || Directory.Exists(git)) { folders.Add(WorkingCopyPath.Root(directory.FullName)); break; }
+                        directory = directory.Parent;
+                    }
+                }
+                if (monitorFolder != null) folders.Add(WorkingCopyPath.Root(selectedFolder));
+                return folders.ToArray();
+            }, ct);
+            foreach (string closed in serverNotices.Keys.Concat(fetchErrors.Keys).Distinct(StringComparer.OrdinalIgnoreCase).Where(p => !roots.Contains(p, StringComparer.OrdinalIgnoreCase)).ToArray())
+            { serverNotices.Remove(closed); fetchErrors.Remove(closed); }
+            int checkedProjects = 0;
+            // Use the same timestamp for the batch and each project's cooldown.
+            DateTime scanAt = DateTime.UtcNow; lastFetchScan = scanAt;
+            foreach (string folder in roots)
+            {
+                if (!fetchSchedule.TryStart(folder, scanAt)) continue;
+                try
+                {
+                    var git = Git();
+                    string remote = await git.ReadRemoteAsync(folder, ct);
+                    if (remote == null) continue;
+                    string token;
+                    if (session.Connected != null && projects.Any(p => p.RepositoryUrl == remote)) token = await session.AccessTokenAsync(ct);
+                    else if (remote == selectedRemote && folder.Equals(WorkingCopyPath.Root(selectedFolder), StringComparison.OrdinalIgnoreCase) && gitToken.Password.Length > 0) token = gitToken.Password;
+                    else continue;
+                    var result = await git.FetchAsync(remote, folder, token, ct);
+                    checkedProjects++;
+                    RecordFetch(folder, result);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception e) { fetchErrors[folder] = Path.GetFileName(folder) + ": fetch unavailable. " + FriendlyError(e); }
+                finally { fetchSchedule.Complete(folder); }
+            }
+            if (!disposed)
+            {
+                lastFetchCompleted = DateTime.UtcNow; lastFetchCount = checkedProjects; RenderFetchNotice();
+            }
+        }
+        private void RecordFetch(string folder, GitStatus result)
+        {
+            folder = WorkingCopyPath.Root(folder);
+            fetchErrors.Remove(folder); fetchWarnings[folder] = result.PotentialConflicts.ToArray();
+            if (result.IncomingCommits == 0) serverNotices.Remove(folder);
+            else serverNotices[folder] = Path.GetFileName(folder) + ": " + result.IncomingCommits + " server commits" +
+                (result.PotentialConflicts.Count > 0 ? " (possible file conflicts)" : "");
+            RenderFetchNotice();
+        }
+        private void RenderFetchNotice()
+        {
+            if (fetchScanError != null) { fetchNotice.Text = fetchScanError; fetchNotice.Foreground = Brushes.DarkOrange; return; }
+            if (lastFetchCompleted == DateTime.MinValue) return;
+            string checkedAt = lastFetchCompleted.ToLocalTime().ToString("HH:mm:ss");
+            var notices = serverNotices.Values.Concat(fetchErrors.Values).ToArray();
+            fetchNotice.Text = notices.Length == 0 ? "Background fetch checked " + lastFetchCount + " projects at " + checkedAt + ". Next check in two minutes." :
+                "Checked " + checkedAt + " · " + string.Join("\n", notices) + (fetchErrors.Count > 0 ? "\nBackground fetch retries automatically." : "\nReview Pull changes to update files.");
+            fetchNotice.Foreground = notices.Length == 0 ? Brushes.DimGray : Brushes.DarkOrange;
+        }
+        private async Task<bool> PullChangesAsync(CancellationToken ct)
+        {
+            using (var plan = await Git().PreparePullAsync(gitRemote.Text, gitFolder.Text, await GitTokenAsync(ct), ct))
+            {
+                if (plan.IncomingCommits == 0) return true;
+                ReadEditorState();
+                if (!editorStateAvailable || unsavedDocuments > 0) throw new InvalidOperationException("Save open project documents before reviewing a pull. Saved local changes can be kept in the conflict review.");
+                using (var dialog = new PullChangesDialog(plan))
+                {
+                    System.Windows.Forms.DialogResult review;
+                    operation.CancelAfter(Timeout.InfiniteTimeSpan);
+                    try { review = dialog.ShowDialog(documents); }
+                    finally { operation.CancelAfter(TimeSpan.FromMinutes(5)); }
+                    if (review != System.Windows.Forms.DialogResult.OK) { status.Text = "Pull cancelled. No local files were replaced."; return false; }
+                    ct.ThrowIfCancellationRequested();
+                    var reopen = documents?.CloseForPull(gitFolder.Text, plan.UpdatedFiles);
+                    status.Text = "Applying reviewed project changes…";
+                    await Git().ApplyPullAsync(plan, dialog.Choices, ct);
+                    try { reopen?.Invoke(); }
+                    catch { throw new InvalidOperationException("Changes were pulled. Reopen the project to load its updated documents."); }
+                }
+                await RefreshGitAsync(ct); SaveSettings(); return true;
+            }
         }
         private async Task SaveToServerAsync() => await RunAsync(async ct =>
         {
@@ -408,6 +540,7 @@ namespace Altium17Cloud
             var before = await Git().StatusAsync(gitRemote.Text, gitFolder.Text, ct);
             if (before.Branch != "master") throw new InvalidOperationException("Switch to master before saving to Altium 365.");
             documents?.SaveModified(gitFolder.Text);
+            if (!await PullChangesAsync(ct)) return;
             await RefreshGitAsync(ct);
             if (!editorStateAvailable || unsavedDocuments > 0) throw new InvalidOperationException("Save the project's documents in Altium before uploading. Nothing was uploaded.");
             if (!workingStatus.HasPendingSave) { status.Text = "Project is up to date. Nothing to save to the server."; return; }
@@ -505,8 +638,9 @@ namespace Altium17Cloud
             createProject.IsEnabled = refresh.IsEnabled = open.IsEnabled = !busy && session.Connected != null;
             useProject.IsEnabled = !busy && session.Connected != null && projectGrid?.SelectedItem is CloudProject project && projectView.Contains(project) && !string.IsNullOrEmpty(project.RepositoryUrl);
             clone.IsEnabled = gitRefresh.IsEnabled = !busy;
+            fetch.IsEnabled = !busy && workingStatus != null;
             pull.IsEnabled = push.IsEnabled = !busy && workingStatus?.Branch == "master";
-            commit.IsEnabled = !busy && workingStatus?.Branch == "master" && changes.Count > 0;
+            commit.IsEnabled = !busy && workingStatus?.Branch == "master" && !workingStatus.HasConflicts && changes.Count > 0;
             openProject.IsEnabled = !busy && workingStatus != null && openProjectAction != null;
             saveToServer.Visibility = workingStatus?.Branch == "master" && (unsavedDocuments > 0 || workingStatus.HasPendingSave) ? Visibility.Visible : Visibility.Collapsed;
             saveToServer.IsEnabled = !busy && editorStateAvailable;

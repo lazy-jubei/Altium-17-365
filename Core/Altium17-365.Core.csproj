@@ -1,5 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><TargetFrameworks>netstandard2.0;net8.0</TargetFrameworks><LangVersion>12</LangVersion><Version>0.3.1</Version><AssemblyName>Altium17-365.Core</AssemblyName></PropertyGroup>
+  <PropertyGroup><TargetFrameworks>netstandard2.0;net8.0</TargetFrameworks><LangVersion>12</LangVersion><Version>0.4.0</Version><AssemblyName>Altium17-365.Core</AssemblyName></PropertyGroup>
   <ItemGroup><PackageReference Include="Altium.Auth" Version="0.2.1"/><PackageReference Include="Newtonsoft.Json" Version="13.0.3"/></ItemGroup>
   <ItemGroup><EmbeddedResource Include="Project.gitignore" LogicalName="Altium17Cloud.Project.gitignore"/></ItemGroup>
 </Project>

@@ -9,7 +9,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
-internal static class Program
+internal static partial class Program
 {
     const string Remote = "https://afs-vcs-uw1.365.altium.com/opaque/project.git", Token = "test-workspace-token";
     static readonly CancellationToken None = CancellationToken.None;
@@ -18,7 +18,7 @@ internal static class Program
     static async Task Reject(Func<Task> action, string name, string expected = null)
     {
         try { await action(); }
-        catch (Exception e) { Require(expected == null || e.Message.Contains(expected), name); return; }
+        catch (Exception e) { Require(expected == null || e.Message.Contains(expected), name + (expected != null && !e.Message.Contains(expected) ? "; got " + e.GetType().Name + ": " + e.Message : "")); return; }
         throw new Exception(name);
     }
     static async Task<GitResult> Plain(string folder, params string[] args)
@@ -147,6 +147,10 @@ internal static class Program
             await Reject(() => git.CloneAsync(Remote, a, Token, None), "clone preserves a nonempty folder", "preserve");
             await Reject(() => git.StatusAsync(Remote, Path.Combine(a, ".git"), None), "rejects a folder inside the working copy");
 
+            await Reject(() => new WorkspaceGit(new ErrorRunner("fatal: Not possible to fast-forward, aborting. abc401def abc403def")).CloneAsync(Remote, Path.Combine(root, "hash error"), Token, None),
+                "HTTP-looking digits inside Git hashes do not hide a reconciliation error", "reconciliation");
+            await Reject(() => new WorkspaceGit(new ErrorRunner("fatal: The requested URL returned error: 403")).CloneAsync(Remote, Path.Combine(root, "http error"), Token, None),
+                "a real HTTP 403 still reports authentication failure", "authentication failed");
             var failure = new WorkspaceGit(new FailureRunner());
             await Reject(() => failure.CloneAsync(Remote, Path.Combine(root, "failed clone"), Token, None), "Git server errors do not expose tokens or response bodies", "authentication failed");
             Require(!Directory.Exists(Path.Combine(root, "failed clone")), "failed access check leaves no partial clone folder");
@@ -166,6 +170,7 @@ internal static class Program
             await Reject(() => new ProcessGitRunner(self).RunAsync(network, None), "older Git is rejected before receiving credentials", "2.31");
             await ServerSaveChecks(root, bare);
             await EmptyProjectChecks(root);
+            await SyncChecks(root);
             Console.WriteLine(passed + " Git checks passed.");
         }
         finally
@@ -256,6 +261,7 @@ internal static class Program
         await Plain(folder, "checkout", "master"); File.WriteAllText(Path.Combine(folder, "Board.SchDoc"), "master"); await Plain(folder, "commit", "-am", "Master edit");
         await Reject(() => Plain(folder, "merge", "conflicting-side"), "test creates a real unresolved merge");
         before = runner.NetworkCalls;
+        await Reject(() => git.CommitAsync(Remote, folder, new[] { "Board.SchDoc" }, "", None), "standalone Commit selected also refuses unresolved merge files", "merge conflicts");
         await Reject(() => git.SaveToServerAsync(Remote, folder, new[] { "Board.SchDoc" }, "Unresolved", Token, None), "Save to Server rejects unresolved merge conflicts", "merge conflicts");
         Require(runner.NetworkCalls == before && (await git.StatusAsync(Remote, folder, None)).Changes.Any(c => c.Status == "UU"), "conflict rejection neither stages markers nor uploads");
     }
@@ -271,13 +277,14 @@ internal static class Program
         public async Task<GitResult> RunAsync(GitCommand original, CancellationToken cancellation)
         {
             Commands.Add(original);
-            var mapped = new GitCommand { WorkingDirectory = original.WorkingDirectory };
+            var mapped = new GitCommand { WorkingDirectory = original.WorkingDirectory, Input = original.Input };
             mapped.Arguments.AddRange(original.Arguments); foreach (var pair in original.Environment) mapped.Environment[pair.Key] = pair.Value;
             string verb = original.Arguments[2];
             if (verb == "push" && FailNextPush) { FailNextPush = false; return new GitResult { ExitCode = 128, Error = "Authentication failed: private-server-body " + Token }; }
             if (verb == "clone" || verb == "ls-remote") { NetworkCalls++; mapped.Arguments[mapped.Arguments.IndexOf(Remote)] = bare; }
-            if (verb == "pull" || verb == "push") { NetworkCalls++; mapped.Arguments[mapped.Arguments.IndexOf("origin")] = bare; }
+            if (verb == "pull" || verb == "push" || verb == "fetch") { NetworkCalls++; mapped.Arguments[mapped.Arguments.IndexOf("origin")] = bare; }
             var result = await process.RunAsync(mapped, cancellation);
+            if (result.ExitCode != 0 && verb == "read-tree") Console.WriteLine("TEST read-tree: " + result.Error);
             if (verb == "commit" && result.ExitCode == 0 && SwitchRemoteAfterCommit)
             { SwitchRemoteAfterCommit = false; await Plain(original.WorkingDirectory, "remote", "set-url", "origin", "https://other.365.altium.com/project.git"); }
             if (verb == "clone" && result.ExitCode == 0) await Plain(original.Arguments.Last(), "remote", "set-url", "origin", Remote);
@@ -302,6 +309,12 @@ internal static class Program
             result.Output = string.Join("\0", records) + "\0";
             return result;
         }
+    }
+    sealed class ErrorRunner : IGitRunner
+    {
+        readonly string error;
+        internal ErrorRunner(string error) { this.error = error; }
+        public Task<GitResult> RunAsync(GitCommand command, CancellationToken cancellation) => Task.FromResult(new GitResult { ExitCode = 128, Error = error });
     }
     sealed class FailureRunner : IGitRunner
     {

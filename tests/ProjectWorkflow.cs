@@ -92,4 +92,32 @@ internal static class ProjectWorkflow
         Console.WriteLine("Independent final pull verified; empty-message commits: " + finalCount + " of 10 allowed.");
         Console.WriteLine("Test project is clean; no controller files were used.");
     }
+    internal static async Task SyncServerAsync(WorkspaceSession session, string root, CancellationToken ct)
+    {
+        root = Path.GetFullPath(root);
+        string statePath = Path.Combine(root, "live-project.json"), folder = Path.Combine(root, "second-copy");
+        var state = JObject.Parse(File.ReadAllText(statePath));
+        if ((string)state["workspace"] != session.Connected.Url.AbsoluteUri || (int)state["phase"] != 3 ||
+            !((string)state["name"] ?? "").StartsWith("AD17-365-Test-", StringComparison.Ordinal)) throw new InvalidOperationException("Use the existing isolated test project only.");
+        var project = await session.ProjectFromReferenceAsync((string)state["referenceId"], ct);
+        if (project.Name != (string)state["name"]) throw new InvalidOperationException("Test project identity changed.");
+        var git = new WorkspaceGit(runner);
+        if (state["syncServerHead"] != null) { Console.WriteLine("Server sync fixture already uploaded; no second commit created."); return; }
+        if (state["syncServerAttempt"] != null) throw new InvalidOperationException("Prior sync upload is unconfirmed. Inspect history before retrying.");
+        await Git(folder, ct, "config", "user.name", "lazy-jubei");
+        await Git(folder, ct, "config", "user.email", "323475146+lazy-jubei@users.noreply.github.com");
+        await Git(folder, ct, "config", "commit.gpgSign", "false");
+        await git.PullAsync(project.RepositoryUrl, folder, await session.AccessTokenAsync(ct), ct);
+        if ((await git.StatusAsync(project.RepositoryUrl, folder, ct)).Changes.Count > 0) throw new InvalidOperationException("Independent test checkout must be clean before setting up the server edit.");
+        File.WriteAllText(Path.Combine(folder, "NativeUploadCheck.txt"), "Altium 17 background-fetch server test.\n");
+        if ((int)state["attempts"] >= 10) throw new InvalidOperationException("Test commit limit reached.");
+        state["attempts"] = (int)state["attempts"] + 1; state["syncServerAttempt"] = true; File.WriteAllText(statePath, state.ToString());
+        await git.SaveToServerAsync(project.RepositoryUrl, folder, new[] { "NativeUploadCheck.txt" }, "", await session.AccessTokenAsync(ct), ct);
+        state["syncServerHead"] = await Git(folder, ct, "rev-parse", "HEAD");
+        state["commits"] = int.Parse(await Git(folder, ct, "rev-list", "--count", "HEAD")) - (int)state["baseline"];
+        if ((int)state["commits"] > 10 || (await Git(folder, ct, "log", "--format=%B")).Length > 0) throw new InvalidOperationException("Unexpected test history or commit comments.");
+        File.WriteAllText(statePath, state.ToString());
+        Console.WriteLine("Uploaded one blank-message server edit in the isolated test project; commits: " + state["commits"] + "/10.");
+    }
+
 }
