@@ -171,6 +171,7 @@ internal static partial class Program
             await ServerSaveChecks(root, bare);
             await EmptyProjectChecks(root);
             await SyncChecks(root);
+            await DiscardChecks(root);
             Console.WriteLine(passed + " Git checks passed.");
         }
         finally

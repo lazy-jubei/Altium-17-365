@@ -61,21 +61,21 @@ namespace Altium17Cloud
             }
             return files.ToArray();
         }
-        internal Action CloseForPull(string folder, IEnumerable<string> updated)
+        internal Action CloseForUpdate(string folder, IEnumerable<string> updated, string action)
         {
             var paths = updated.Select(p => Path.GetFullPath(Path.Combine(folder, p))).ToArray();
             bool Affected(string path) => paths.Any(p => string.Equals(path, p, StringComparison.OrdinalIgnoreCase) || WorkingCopyPath.Contains(p, path));
             var reopen = OpenFiles(folder).Where(Affected).ToArray();
-            if (ModifiedFiles(folder).Length > 0) throw new InvalidOperationException("Save open project documents before pulling changes.");
+            if (ModifiedFiles(folder).Length > 0) throw new InvalidOperationException("Save or close unsaved editor tabs before applying a " + action + ".");
             var projects = ProjectFiles().Where(Affected).ToArray();
-            if (projects.Length > 0) throw new InvalidOperationException("The pull changes an open project file. Close this project, then pull again from the Altium 365 panel.");
+            if (projects.Length > 0) throw new InvalidOperationException("This changes an open project file. Close this project, then retry from the Altium 365 panel.");
             foreach (string file in reopen)
             {
                 var doc = client.GetDocumentByPath(file);
                 if (doc != null) client.CloseDocument(doc);
             }
             if (OpenFiles(folder).Any(Affected))
-                throw new InvalidOperationException("Altium did not close every affected document. Close them before retrying the pull.");
+                throw new InvalidOperationException("Altium did not close every affected document. Close them before retrying the " + action + ".");
             return () =>
             {
                 foreach (string file in reopen.Where(File.Exists))

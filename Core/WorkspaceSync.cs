@@ -160,9 +160,7 @@ namespace Altium17Cloud
             if (status.Branch != "master") throw new GitOperationException("Switch to master before pulling project changes.");
             folder = Folder(folder);
             string gitDir = await OutputAsync(folder, ct, "rev-parse", "--absolute-git-dir").ConfigureAwait(false);
-            foreach (string marker in new[] { "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply" })
-                if (File.Exists(Path.Combine(gitDir, marker)) || Directory.Exists(Path.Combine(gitDir, marker)))
-                    throw new GitOperationException("Finish or abort the existing Git merge or rebase before reviewing another pull.");
+            RequireNoGitOperation(gitDir);
             if (status.IncomingCommits == 0)
                 return new GitPullPlan { Remote = remote, Folder = folder, Conflicts = Array.Empty<GitFileConflict>(), UpdatedFiles = Array.Empty<string>() };
             var plan = new GitPullPlan { Remote = remote, Folder = folder, GitDir = gitDir, IncomingCommits = status.IncomingCommits };
@@ -215,6 +213,17 @@ namespace Altium17Cloud
                 nextHead = await OutputAsync(plan.Folder, ct, "commit-tree", tree, "-p", plan.Head, "-p", plan.ServerHead, "-m", "").ConfigureAwait(false);
             }
             else if (plan.Head != null && plan.BaseTree == plan.ServerHead) nextHead = plan.Head;
+            await InstallReviewedTreesAsync(plan, workTree, indexTree, nextHead, true, ct).ConfigureAwait(false);
+        }
+        private static void RequireNoGitOperation(string gitDir)
+        {
+            foreach (string marker in new[] { "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply" })
+                if (File.Exists(Path.Combine(gitDir, marker)) || Directory.Exists(Path.Combine(gitDir, marker)))
+                    throw new GitOperationException("Finish or abort the existing Git merge or rebase before replacing project files.");
+        }
+        private async Task<string> InstallReviewedTreesAsync(GitPullPlan plan, string workTree, string indexTree, string nextHead, bool pulling, CancellationToken ct)
+        {
+            string action = pulling ? "Pull" : "Discard", recovery = null;
             // Lock the real index, recheck the reviewed versions, then let Git check every file before writing.
             string actualIndex = Path.Combine(plan.GitDir, "index"), lockPath = actualIndex + ".lock";
             bool retainLock = false, ownsLock = false;
@@ -226,16 +235,17 @@ namespace Altium17Cloud
                 bool changed = false;
                 try
                 {
+                    RequireNoGitOperation(plan.GitDir);
                     var current = await MasterAsync(plan.Remote, plan.Folder, ct).ConfigureAwait(false);
                     string head = current.IsUnborn ? null : await OutputAsync(plan.Folder, ct, "rev-parse", "HEAD").ConfigureAwait(false);
                     string server = await OutputAsync(plan.Folder, ct, "for-each-ref", "--format=%(objectname)", "refs/remotes/origin/master").ConfigureAwait(false);
                     if (server.Length == 0) server = head;
                     var check = new GitPullPlan { Folder = plan.Folder, Temp = plan.Temp, GitDir = plan.GitDir, ServerFiles = plan.ServerFiles };
                     await SnapshotAsync(check, ct).ConfigureAwait(false);
-                    if (head != plan.Head || server != plan.ServerHead || check.IndexTree != plan.IndexTree || check.WorkTree != plan.WorkTree)
+                    if (head != plan.Head || pulling && server != plan.ServerHead || check.IndexTree != plan.IndexTree || check.WorkTree != plan.WorkTree)
                         throw new GitOperationException("Local or server files changed during review. Refresh and review the latest versions; nothing was replaced.");
                     if (File.Exists(actualIndex)) using (var original = File.OpenRead(actualIndex)) original.CopyTo(indexLock);
-                    string recovery = "refs/altium17365/recovery/" + Guid.NewGuid().ToString("N");
+                    recovery = "refs/altium17365/recovery/" + Guid.NewGuid().ToString("N");
                     await OutputAsync(plan.Folder, ct, "update-ref", recovery + "/worktree", plan.WorkTree).ConfigureAwait(false);
                     await OutputAsync(plan.Folder, ct, "update-ref", recovery + "/index", plan.IndexTree).ConfigureAwait(false);
                     if (plan.Head != null) await OutputAsync(plan.Folder, ct, "update-ref", recovery + "/head", plan.Head).ConfigureAwait(false);
@@ -252,7 +262,7 @@ namespace Altium17Cloud
                 }
                 catch (Exception error) when (changed)
                 {
-                    throw new GitOperationException("Pull did not finish. Keep index.lock; original files and staging are retained under refs/altium17365/recovery. Review recovery before continuing. " + (error is OperationCanceledException ? "The operation was cancelled." : ""));
+                    throw new GitOperationException(action + " did not finish. Keep index.lock; original files and staging are retained under " + recovery + ". Review recovery before continuing. " + (error is OperationCanceledException ? "The operation was cancelled." : ""));
                 }
               }
                 if (File.Exists(actualIndex)) File.Replace(lockPath, actualIndex, null); else File.Move(lockPath, actualIndex);
@@ -260,9 +270,10 @@ namespace Altium17Cloud
             }
             catch (Exception e) when (retainLock && !(e is GitOperationException))
             {
-                throw new GitOperationException("Pull could not finish installing the updated index. Keep index.lock and inspect refs/altium17365/recovery before continuing.");
+                throw new GitOperationException(action + " could not finish installing the updated index. Keep index.lock and inspect " + recovery + " before continuing.");
             }
             finally { if (ownsLock && !retainLock && File.Exists(lockPath)) File.Delete(lockPath); }
+            return recovery;
         }
     }
 }

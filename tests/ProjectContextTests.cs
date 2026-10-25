@@ -20,7 +20,7 @@ namespace Altium17Cloud
         internal string[] OpenFiles(string folder = null) => Array.Empty<string>();
         internal string[] ModifiedFiles(string folder) => Array.Empty<string>();
         internal void SaveModified(string folder) { }
-        internal Action CloseForPull(string folder, System.Collections.Generic.IEnumerable<string> files) => () => { };
+        internal Action CloseForUpdate(string folder, System.Collections.Generic.IEnumerable<string> files, string action) => () => { };
     }
 }
 static class Program

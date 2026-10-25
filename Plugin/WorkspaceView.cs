@@ -62,6 +62,7 @@ namespace Altium17Cloud
         private readonly Button saveToServer = Button("Save to Server…");
         private readonly ObservableCollection<GitChange> changes = new ObservableCollection<GitChange>();
         private readonly DataGrid changesGrid = new DataGrid();
+        private readonly Button discard = Button("Discard changes…");
         private readonly Action<string> openProjectAction;
         private readonly WorkspaceDocuments documents;
         private readonly DispatcherTimer monitorTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
@@ -325,7 +326,7 @@ namespace Altium17Cloud
             saveToServer.FontWeight = FontWeights.SemiBold;
             saveToServer.Background = new SolidColorBrush(Color.FromRgb(24, 91, 153)); saveToServer.Foreground = Brushes.White;
             settings.Children.Add(saveToServer);
-            foreach (var button in new[] { clone, gitRefresh, fetch, pull, push, openProject }) buttons.Children.Add(button);
+            foreach (var button in new[] { clone, gitRefresh, fetch, pull, push, openProject, discard }) buttons.Children.Add(button);
             settings.Children.Add(buttons); settings.Children.Add(gitSummary);
             DockPanel.SetDock(settings, Dock.Top); layout.Children.Add(settings);
             var commitArea = new StackPanel();
@@ -382,6 +383,32 @@ namespace Altium17Cloud
                 await RefreshGitAsync(ct); commitMessage.Clear(); status.Text = "Selected files committed locally. Push to send the commits to Altium 365.";
             }, "Committing selected files…");
             saveToServer.Click += async (_, __) => await SaveToServerAsync();
+            discard.Click += async (_, __) => await RunAsync(async ct =>
+            {
+                ReadEditorState();
+                if (!editorStateAvailable || unsavedDocuments > 0)
+                    throw new InvalidOperationException("Save or close unsaved editor tabs before discarding saved files.");
+                var git = Git();
+                using (var plan = await git.PrepareDiscardAsync(gitRemote.Text, gitFolder.Text, ct))
+                using (var dialog = new DiscardChangesDialog(plan))
+                {
+                    if (plan.Changes.Count == 0) { await RefreshGitAsync(ct); status.Text = "No saved changes to discard."; return; }
+                    System.Windows.Forms.DialogResult review;
+                    operation.CancelAfter(Timeout.InfiniteTimeSpan);
+                    try { review = documents == null ? dialog.ShowDialog() : dialog.ShowDialog(documents); }
+                    finally { operation.CancelAfter(TimeSpan.FromMinutes(5)); }
+                    if (review != System.Windows.Forms.DialogResult.OK) { status.Text = "Discard cancelled. Files kept."; return; }
+                    var paths = dialog.SelectedPaths;
+                    var affected = plan.Changes.Where(c => paths.Contains(c.Path)).SelectMany(c =>
+                        c.OriginalPath == null ? new[] { c.Path } : new[] { c.Path, c.OriginalPath });
+                    var reopen = documents?.CloseForUpdate(gitFolder.Text, affected, "discard");
+                    bool reopenFailed = false;
+                    try { await git.ApplyDiscardAsync(plan, paths, ct); }
+                    finally { try { reopen?.Invoke(); } catch { reopenFailed = true; } }
+                    await RefreshGitAsync(ct);
+                    status.Text = "Selected changes discarded. Recovery copy saved locally." + (reopenFailed ? " Reopen the affected documents in Altium." : "");
+                }
+            }, "Reviewing changes to discard…");
             openProject.Click += (_, __) =>
             {
                 try
@@ -660,7 +687,7 @@ namespace Altium17Cloud
                     finally { operation.CancelAfter(TimeSpan.FromMinutes(5)); }
                     if (review != System.Windows.Forms.DialogResult.OK) { status.Text = "Pull cancelled. No local files were replaced."; return false; }
                     ct.ThrowIfCancellationRequested();
-                    var reopen = documents?.CloseForPull(gitFolder.Text, plan.UpdatedFiles);
+                    var reopen = documents?.CloseForUpdate(gitFolder.Text, plan.UpdatedFiles, "pull");
                     status.Text = "Applying reviewed project changes…";
                     await Git().ApplyPullAsync(plan, dialog.Choices, ct);
                     try { reopen?.Invoke(); }
@@ -796,6 +823,7 @@ namespace Altium17Cloud
             fetch.IsEnabled = !busy && workingStatus != null;
             pull.IsEnabled = push.IsEnabled = !busy && workingStatus?.Branch == "master";
             commit.IsEnabled = !busy && workingStatus?.Branch == "master" && !workingStatus.HasConflicts && changes.Count > 0;
+            discard.IsEnabled = !busy && workingStatus?.Branch == "master" && !workingStatus.HasConflicts && changes.Count > 0;
             openProject.IsEnabled = !busy && openProjectAction != null;
             saveToServer.Visibility = workingStatus?.Branch == "master" && (unsavedDocuments > 0 || workingStatus.HasPendingSave) ? Visibility.Visible : Visibility.Collapsed;
             saveToServer.IsEnabled = !busy && editorStateAvailable;

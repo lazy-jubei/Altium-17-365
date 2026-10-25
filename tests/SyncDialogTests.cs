@@ -40,7 +40,23 @@ static class Program
                 Require(form.Choices["Board.PcbDoc"] == GitFileVersion.Local && form.Choices["Old.SchDoc"] == GitFileVersion.Server, "review returns each selected version");
                 form.Size = form.MinimumSize; Layout(form); form.Close();
             }
-            Console.WriteLine(checks + " conflict-dialog checks passed."); return 0;
+            var discardPlan = new GitDiscardPlan();
+            Set(discardPlan, nameof(discardPlan.Changes), new[] { new GitChange { Path = "Board.PcbDoc", Status = " M", Selected = true },
+                new GitChange { Path = "New.SchDoc", Status = "??", Selected = true } });
+            using (var form = new DiscardChangesDialog(discardPlan))
+            {
+                form.Show(); Application.DoEvents();
+                var files = Children(form).OfType<ListView>().Single();
+                var discard = Children(form).OfType<Button>().Single(b => b.Text == "Discard selected");
+                Require(!discard.Enabled && form.SelectedPaths.Length == 0, "discard never preselects files even if they were selected for commit");
+                Require(((Button)form.AcceptButton).Text == "Cancel" && form.AcceptButton == form.CancelButton, "Enter and Escape both default to Cancel in discard review");
+                files.Items[1].Checked = true; Application.DoEvents();
+                Require(discard.Enabled && form.SelectedPaths.SequenceEqual(new[] { "New.SchDoc" }), "discard returns only explicitly checked files");
+                files.Items[1].Checked = false; Application.DoEvents();
+                Require(!discard.Enabled, "discard is disabled again when the final selection is cleared");
+                form.Close();
+            }
+            Console.WriteLine(checks + " sync-dialog checks passed."); return 0;
         }
         catch (Exception e) { Console.Error.WriteLine("FAIL " + e.Message); return 1; }
     }

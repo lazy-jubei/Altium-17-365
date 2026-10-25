@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><OutputType>Exe</OutputType><TargetFrameworks>net8.0;net48</TargetFrameworks><LangVersion>12</LangVersion><EnableDefaultCompileItems>false</EnableDefaultCompileItems><EnableWindowsTargeting>true</EnableWindowsTargeting></PropertyGroup>
   <PropertyGroup Condition="'$(TargetFramework)' == 'net48'"><PlatformTarget>x86</PlatformTarget></PropertyGroup>
-  <ItemGroup><Compile Include="GitTests.cs"/><Compile Include="GitSyncTests.cs"/><ProjectReference Include="../Core/Altium17-365.Core.csproj"/></ItemGroup>
+  <ItemGroup><Compile Include="GitTests.cs"/><Compile Include="GitSyncTests.cs"/><Compile Include="GitDiscardTests.cs"/><ProjectReference Include="../Core/Altium17-365.Core.csproj"/></ItemGroup>
   <ItemGroup Condition="'$(TargetFramework)' == 'net48'"><PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" Version="1.0.3" PrivateAssets="all"/></ItemGroup>
 </Project>

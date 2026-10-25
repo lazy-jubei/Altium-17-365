@@ -1,5 +1,15 @@
 # Verification
 
+## v0.8.0 selected-file discard and screenshots
+
+25 October 2026, AD17 17.1 under Wine:
+
+- **Discard changes…** reviews individual files with no preselected paths. Enter and Escape default to Cancel. Selected staged/unstaged changes return to the last local commit, selected new files are removed, and renamed files restore both paths. Unrelated files, staging, commits and the server are preserved. Unsaved editor documents and open project files are protected.
+- Reviews recheck HEAD, staging and saved contents under the Git index lock before replacement. Local recovery refs retain the original worktree and index. Existing merge/rebase operations and external locks block replacement; an interrupted write retains its recovery snapshots and lock.
+- All 140 real-Git checks pass on .NET 8, including binary bytes, Unicode/space filenames, renames, deletions, new files, an unborn branch, file/folder replacements, stale reviews and a simulated interruption. All 26 native dialog checks and 31 actual-view checks pass under Wine.
+- Live native testing used a modified tracked text file and a new temporary file in the isolated cloud test checkout. Cancel kept both; Discard restored/removed the selected files and left a clean checkout with the same seven commits. No upload was performed. No parent-window exception appeared.
+- README captures show Connection, Projects and Git with names covered before capture. Projects now says **projects found** and omits the VCS column. The live search returned one of 784 projects.
+
 ## v0.7.0 connection controls and remembered sign-in
 
 25 October 2026:
