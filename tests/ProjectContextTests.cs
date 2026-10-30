@@ -197,6 +197,22 @@ static class Program
             Call(view, "OpenClonedProject");
             Require(File.Exists(projectPath) && Field<TextBlock>(view, "status").Text.Contains("Project cloned. Automatic opening failed"), "an editor open failure preserves the successful clone and offers manual opening");
         }
+        string newFolder = Path.Combine(root, "new project"); Directory.CreateDirectory(newFolder); opened = null;
+        using (var view = new WorkspaceView(path => opened = path, docs, Path.Combine(root, "new settings", "settings.json")))
+        {
+            Field<DispatcherTimer>(view, "monitorTimer").Stop();
+            var created = new CloudProject { Name = "New Project", RepositoryUrl = remoteA };
+            Field<System.Collections.ObjectModel.ObservableCollection<CloudProject>>(view, "projects").Add(created);
+            var operation = new CancellationTokenSource(); Set(view, "operation", operation);
+            Call(view, "SetCloneTarget", created);
+            Require(Field<TextBox>(view, "gitRemote").Text == remoteA && Field<CheckBox>(view, "followProject").IsChecked == true,
+                "new project creation prepares its clone while the create operation is active");
+            Field<TextBox>(view, "gitFolder").Text = newFolder;
+            NewProjectFiles.Write(newFolder, created.Name); Call(view, "OpenClonedProject");
+            Require(opened == Path.Combine(newFolder, "New Project.PrjPcb") && File.Exists(Path.Combine(newFolder, ".gitignore")),
+                "a newly created project's initial document opens automatically with its ignore rules");
+            Set(view, "operation", null); operation.Dispose();
+        }
         Console.WriteLine(checks + " project-context checks passed.");
     }
     [STAThread] static int Main()

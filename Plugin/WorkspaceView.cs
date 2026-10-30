@@ -261,14 +261,24 @@ namespace Altium17Cloud
                 projects.Add(created); projectSearch.Clear(); ApplyProjectFilter(); grid.SelectedItem = created;
                 try
                 {
-                    var ready = await session.ProjectFromReferenceAsync(created.ReferenceId, ct);
-                    if (ready != null) { projects.Remove(created); projects.Add(ready); grid.SelectedItem = ready; }
-                    if (grid.SelectedItem != null) grid.ScrollIntoView(grid.SelectedItem);
-                    status.Text = !string.IsNullOrEmpty(ready?.RepositoryUrl) ? "Project created. Use selected project to clone its working copy." :
-                        "Project created. Refresh the list when Altium 365 finishes preparing its repository.";
+                    var ready = created;
+                    for (int attempt = 0; string.IsNullOrEmpty(ready?.RepositoryUrl) && attempt < 20; attempt++)
+                    {
+                        if (attempt > 0) await Task.Delay(1000, ct);
+                        status.Text = "Project created. Preparing its working copy…";
+                        ready = await session.ProjectFromReferenceAsync(created.ReferenceId, ct);
+                    }
+                    if (ready == null || string.IsNullOrEmpty(ready.RepositoryUrl))
+                        status.Text = "Project created. Its repository is still being prepared; refresh and clone it when ready.";
+                    else
+                    {
+                        projects.Remove(created); projects.Add(ready); grid.SelectedItem = ready; grid.ScrollIntoView(ready);
+                        SetCloneTarget(ready);
+                        await CloneSelectedAsync(ct);
+                    }
                 }
-                catch (Exception error) when (error is OperationCanceledException || error is HttpRequestException || error is InvalidOperationException)
-                { status.Text = "Project created. Refresh the list to load its repository details."; }
+                catch (Exception error)
+                { status.Text = "Project created. " + (error is OperationCanceledException ? "Local setup cancelled; clone it later from Projects." : "Local setup could not finish. " + FriendlyError(error) + " Clone it later from Projects." ); }
                 UpdateProjectCount();
             }, "Loading project folders…");
             open.Click += (_, __) => { if (session.Connected != null) TryOpen(session.Connected.Url.AbsoluteUri); };
@@ -291,6 +301,10 @@ namespace Altium17Cloud
         private void PrepareClone()
         {
             if (IsBusy || !(projectGrid.SelectedItem is CloudProject project) || !projectView.Contains(project) || string.IsNullOrEmpty(project.RepositoryUrl)) return;
+            SetCloneTarget(project);
+        }
+        private void SetCloneTarget(CloudProject project)
+        {
             monitorCancellation?.Cancel(); contextPending = false; preparingClone = true;
             settingWorkingCopy = true;
             try { followProject.IsChecked = true; } finally { settingWorkingCopy = false; }
@@ -306,7 +320,7 @@ namespace Altium17Cloud
             SetWorkingCopy(project.RepositoryUrl, folder); BindKnownProject();
             activeProject.Text = project.Name; activeProject.ToolTip = null;
             manualSetup.IsExpanded = true; tabs.SelectedIndex = 2;
-            status.Text = "Choose the local folder, then Clone. Open the cloned project to synchronize with server.";
+            status.Text = "Choose the local folder, then Clone. The project will open automatically.";
             UpdateState();
         }
         private UIElement BuildGit()
@@ -376,32 +390,7 @@ namespace Altium17Cloud
                 preparingClone = false; followProject.IsChecked = false; gitProject = null; gitWorkspace = null; gitToken.Clear(); ClearWorkingStatus();
             };
             gitFolder.TextChanged += (_, __) => { if (!settingWorkingCopy) { if (!preparingClone) followProject.IsChecked = false; ClearWorkingStatus(); } };
-            clone.Click += async (_, __) => await RunAsync(async ct =>
-            {
-                var git = Git();
-                cloneProgress.Visibility = Visibility.Visible; cloneProgress.IsIndeterminate = true;
-                bool reporting = true;
-                var progress = new Progress<GitCloneProgress>(update =>
-                {
-                    if (!reporting || disposed) return;
-                    cloneProgress.IsIndeterminate = false; cloneProgress.Value = update.Percent;
-                    status.Text = update.Phase + ": " + update.Percent + "%";
-                });
-                try
-                {
-                    Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(gitFolder.Text)));
-                    await git.CloneAsync(gitRemote.Text, gitFolder.Text, await GitTokenAsync(ct), gitReference.Text, ct, progress);
-                }
-                finally { reporting = false; cloneProgress.Visibility = Visibility.Collapsed; }
-                await RefreshGitAsync(ct);
-                if (workingStatus.IsUnborn && changes.Count == 0 && gitProject != null)
-                {
-                    NewProjectFiles.Write(gitFolder.Text, gitProject.Name);
-                    await RefreshGitAsync(ct);
-                }
-                ct.ThrowIfCancellationRequested();
-                SaveSettings(); OpenClonedProject();
-            }, "Cloning project…", TimeSpan.FromHours(1));
+            clone.Click += async (_, __) => await RunAsync(CloneSelectedAsync, "Cloning project…", TimeSpan.FromHours(1));
             gitRefresh.Click += async (_, __) => await RunAsync(async ct => { await RefreshGitAsync(ct); SaveSettings(); status.Text = "Working-copy status refreshed."; }, "Reading working-copy status…");
             fetch.Click += async (_, __) => await RunAsync(async ct =>
             {
@@ -467,6 +456,32 @@ namespace Altium17Cloud
             };
             busyControls.AddRange(new Control[] { gitRemote, gitFolder, gitToken, gitExecutable, gitReference, commitMessage, chooseFolder, chooseGit, changesGrid });
             return layout;
+        }
+        private async Task CloneSelectedAsync(CancellationToken ct)
+        {
+            var git = Git();
+            cloneProgress.Visibility = Visibility.Visible; cloneProgress.IsIndeterminate = true;
+            bool reporting = true;
+            var progress = new Progress<GitCloneProgress>(update =>
+            {
+                if (!reporting || disposed) return;
+                cloneProgress.IsIndeterminate = false; cloneProgress.Value = update.Percent;
+                status.Text = update.Phase + ": " + update.Percent + "%";
+            });
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(gitFolder.Text)));
+                await git.CloneAsync(gitRemote.Text, gitFolder.Text, await GitTokenAsync(ct), gitReference.Text, ct, progress);
+            }
+            finally { reporting = false; cloneProgress.Visibility = Visibility.Collapsed; }
+            await RefreshGitAsync(ct);
+            if (workingStatus.IsUnborn && changes.Count == 0 && gitProject != null)
+            {
+                NewProjectFiles.Write(gitFolder.Text, gitProject.Name);
+                await RefreshGitAsync(ct);
+            }
+            ct.ThrowIfCancellationRequested();
+            SaveSettings(); OpenClonedProject();
         }
         private string[] ClonedProjects()
         {

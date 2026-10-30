@@ -21,6 +21,8 @@ Download [v0.8.0 setup](https://github.com/lazy-jubei/Altium-17-365/releases/dow
 
 Open **System → Altium 365 (AD17)**, choose **Sign in**, then select your workspace. Sign-in is remembered across restarts. **Disconnect** keeps it available for reconnecting; **Log out** forgets it.
 
+**Create project…** creates the cloud project, sets up its local working copy and opens it automatically.
+
 Open an existing Altium 365 project in AD17; **Synchronize with server** detects it automatically. To clone, right-click a project in **Projects → Clone**. The Git tab fills a folder under **Public Documents → Altium → Projects**; choose the large **Clone** button to follow live progress. The cloned project opens automatically in AD17. [Git workflow](docs/GIT.md).
 
 ## Build
