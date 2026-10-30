@@ -145,6 +145,28 @@ static class Program
             docs.CurrentFile = null; Call(view, "DetectActiveProject"); await Follow(view);
             Require(view.WorkingFolder.Length == 0 && !Field<Button>(view, "push").IsEnabled, "closing all projects leaves no stale sync target");
         }
+        using (var view = View(docs, Path.Combine(root, "clone", "settings.json")))
+        {
+            var projects = Field<System.Collections.ObjectModel.ObservableCollection<CloudProject>>(view, "projects");
+            var project = new CloudProject { Name = "Clone fixture", RepositoryUrl = remoteA };
+            projects.Add(project);
+            var grid = Field<DataGrid>(view, "projectGrid"); grid.SelectedItem = project;
+            Require(grid.ContextMenu.Items.Count == 1 && (string)((MenuItem)grid.ContextMenu.Items[0]).Header == "Clone", "project context menu offers Clone");
+            ((MenuItem)grid.ContextMenu.Items[0]).RaiseEvent(new System.Windows.RoutedEventArgs(MenuItem.ClickEvent));
+            string expected = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonDocuments), "Altium", "Projects", project.Name);
+            Require(view.WorkingFolder == expected && Field<TabControl>(view, "tabs").SelectedIndex == 2, "Clone menu opens Git with a project folder under Public Documents/Altium/Projects");
+            Require(Field<CheckBox>(view, "followProject").IsChecked == true && Field<Expander>(view, "manualSetup").IsExpanded, "clone setup keeps synchronization checked and exposes the folder");
+            var clone = Field<Button>(view, "clone"); var refresh = Field<Button>(view, "gitRefresh");
+            Require(clone.IsEnabled && clone.Parent is StackPanel && refresh.Parent is WrapPanel && clone.HorizontalAlignment == System.Windows.HorizontalAlignment.Stretch, "large Clone button has its own row above the other actions");
+            Call(view, "DetectActiveProject"); await Follow(view);
+            Require(view.WorkingFolder == expected && Field<TextBox>(view, "gitRemote").Text == remoteA, "active project monitoring preserves a pending clone target");
+            Field<TextBox>(view, "gitFolder").Text = Path.Combine(root, "clone destination");
+            Require(Field<CheckBox>(view, "followProject").IsChecked == true && clone.IsEnabled, "editing the clone destination retains synchronization");
+            project.Name = "../CON:unsafe/part"; Call(view, "PrepareClone");
+            Require(Path.GetDirectoryName(view.WorkingFolder) == Path.GetDirectoryName(expected), "project names cannot escape the default clone root");
+            view.FollowCurrentProject(); await Follow(view);
+            Require(!Field<bool>(view, "preparingClone"), "opening a project resumes active-project synchronization");
+        }
         Console.WriteLine(checks + " project-context checks passed.");
     }
     [STAThread] static int Main()

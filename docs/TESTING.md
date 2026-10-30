@@ -1,5 +1,9 @@
 # Verification
 
+## Project clone workflow
+
+30 October 2026: 39 actual WPF panel checks pass under Wine. The project context menu offers Clone, which selects Git, enables synchronization, and fills a safe Public Documents/Altium/Projects destination. Clone has a separate full-width row. Checks also cover preserving the clone target during active-project detection, editing the destination without disabling synchronization, safe project names, and resuming active-project synchronization on opening a project. The plugin and installer build without warnings or errors.
+
 ## v0.8.0 selected-file discard and screenshots
 
 25 October 2026, AD17 17.1 under Wine:

@@ -92,6 +92,7 @@ namespace Altium17Cloud
         private bool reconnectOnStartup = true;
         private CancellationTokenSource operation;
         private bool disposed;
+        private bool preparingClone;
         private static HttpClient CreateHttp(TimeSpan timeout) => new HttpClient(new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false, SslProtocols = SslProtocols.Tls12 }) { Timeout = timeout };
         private static TextBlock Label(string text) => new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 6) };
         private static Button Button(string text) => new Button { Content = text, Padding = new Thickness(10, 5, 10, 5), Margin = new Thickness(0, 4, 6, 4) };
@@ -270,15 +271,41 @@ namespace Altium17Cloud
                 UpdateProjectCount();
             }, "Loading project folders…");
             open.Click += (_, __) => { if (session.Connected != null) TryOpen(session.Connected.Url.AbsoluteUri); };
-            useProject.Click += (_, __) =>
+            var cloneMenu = new MenuItem { Header = "Clone" };
+            grid.ContextMenu = new ContextMenu(); grid.ContextMenu.Items.Add(cloneMenu);
+            grid.PreviewMouseRightButtonDown += (_, e) =>
             {
-                if (!(grid.SelectedItem is CloudProject project) || !projectView.Contains(project) || string.IsNullOrEmpty(project.RepositoryUrl)) return;
-                followProject.IsChecked = false;
-                SetWorkingCopy(project.RepositoryUrl, gitFolder.Text); BindKnownProject();
-                tabs.SelectedIndex = 2; status.Text = "Project selected. Choose its local working-copy folder, or a new folder to clone into.";
-                UpdateState();
+                var row = ItemsControl.ContainerFromElement(grid, e.OriginalSource as DependencyObject) as DataGridRow;
+                grid.SelectedItem = row?.Item;
             };
+            grid.ContextMenuOpening += (_, e) =>
+            {
+                cloneMenu.IsEnabled = !IsBusy && grid.SelectedItem is CloudProject selected && projectView.Contains(selected) && !string.IsNullOrEmpty(selected.RepositoryUrl);
+                if (!cloneMenu.IsEnabled) e.Handled = true;
+            };
+            cloneMenu.Click += (_, __) => PrepareClone();
+            useProject.Click += (_, __) => PrepareClone();
             return layout;
+        }
+        private void PrepareClone()
+        {
+            if (IsBusy || !(projectGrid.SelectedItem is CloudProject project) || !projectView.Contains(project) || string.IsNullOrEmpty(project.RepositoryUrl)) return;
+            monitorCancellation?.Cancel(); contextPending = false; preparingClone = true;
+            settingWorkingCopy = true;
+            try { followProject.IsChecked = true; } finally { settingWorkingCopy = false; }
+            string name = project.Name ?? "Project";
+            var invalid = Path.GetInvalidFileNameChars().Concat("<>:\"/\\|?*").ToArray();
+            name = new string(name.Select(c => c < 32 || invalid.Contains(c) ? '_' : c).ToArray()).Trim().TrimEnd('.');
+            if (string.IsNullOrWhiteSpace(name) || name == "." || name == "..") name = "Project";
+            if (System.Text.RegularExpressions.Regex.IsMatch(name.Split('.')[0], @"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) name = "_" + name;
+            string root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonDocuments), "Altium", "Projects");
+            string folder = Path.Combine(root, name);
+            for (int suffix = 2; Directory.Exists(folder) || File.Exists(folder); suffix++) folder = Path.Combine(root, name + " (" + suffix + ")");
+            SetWorkingCopy(project.RepositoryUrl, folder); BindKnownProject();
+            activeProject.Text = project.Name; activeProject.ToolTip = null;
+            manualSetup.IsExpanded = true; tabs.SelectedIndex = 2;
+            status.Text = "Choose the local folder, then Clone. Open the cloned project to synchronize with server.";
+            UpdateState();
         }
         private UIElement BuildGit()
         {
@@ -294,7 +321,7 @@ namespace Altium17Cloud
             followProject.Unchecked += (_, __) =>
             {
                 if (settingWorkingCopy) return;
-                contextPending = false; monitorCancellation?.Cancel(); manualSetup.IsExpanded = true;
+                preparingClone = false; contextPending = false; monitorCancellation?.Cancel(); manualSetup.IsExpanded = true;
                 activeProject.Text = "Manual working copy"; UpdateState(); SaveSettings();
             };
             configuration.Children.Add(Label("For cloning or a different working copy, choose a workspace project or enter its repository below."));
@@ -326,7 +353,9 @@ namespace Altium17Cloud
             saveToServer.FontWeight = FontWeights.SemiBold;
             saveToServer.Background = new SolidColorBrush(Color.FromRgb(24, 91, 153)); saveToServer.Foreground = Brushes.White;
             settings.Children.Add(saveToServer);
-            foreach (var button in new[] { clone, gitRefresh, fetch, pull, push, openProject, discard }) buttons.Children.Add(button);
+            clone.HorizontalAlignment = HorizontalAlignment.Stretch; clone.FontWeight = FontWeights.SemiBold;
+            clone.Padding = new Thickness(10, 12, 10, 12); settings.Children.Add(clone);
+            foreach (var button in new[] { gitRefresh, fetch, pull, push, openProject, discard }) buttons.Children.Add(button);
             settings.Children.Add(buttons); settings.Children.Add(gitSummary);
             DockPanel.SetDock(settings, Dock.Top); layout.Children.Add(settings);
             var commitArea = new StackPanel();
@@ -342,9 +371,9 @@ namespace Altium17Cloud
             gitRemote.TextChanged += (_, __) =>
             {
                 if (settingWorkingCopy) return;
-                followProject.IsChecked = false; gitProject = null; gitWorkspace = null; gitToken.Clear(); ClearWorkingStatus();
+                preparingClone = false; followProject.IsChecked = false; gitProject = null; gitWorkspace = null; gitToken.Clear(); ClearWorkingStatus();
             };
-            gitFolder.TextChanged += (_, __) => { if (!settingWorkingCopy) { followProject.IsChecked = false; ClearWorkingStatus(); } };
+            gitFolder.TextChanged += (_, __) => { if (!settingWorkingCopy) { if (!preparingClone) followProject.IsChecked = false; ClearWorkingStatus(); } };
             clone.Click += async (_, __) => await RunAsync(async ct =>
             {
                 var git = Git();
@@ -462,7 +491,7 @@ namespace Altium17Cloud
         }
         private void DetectActiveProject()
         {
-            if (disposed || operation != null || followProject.IsChecked != true) return;
+            if (disposed || operation != null || preparingClone || followProject.IsChecked != true) return;
             string path;
             try { path = documents?.ActiveProjectFile(); }
             catch { path = null; }
@@ -473,7 +502,7 @@ namespace Altium17Cloud
         }
         private async Task FollowActiveProjectAsync(CancellationToken ct)
         {
-            if (!contextPending || followProject.IsChecked != true) return;
+            if (preparingClone || !contextPending || followProject.IsChecked != true) return;
             string path = activeProjectFile;
             try
             {
@@ -501,7 +530,7 @@ namespace Altium17Cloud
         }
         internal void FollowCurrentProject(bool showConnection = true)
         {
-            followProject.IsChecked = true; activeProjectFile = "\0"; DetectActiveProject();
+            preparingClone = false; followProject.IsChecked = true; activeProjectFile = "\0"; DetectActiveProject();
             if (showConnection) tabs.SelectedIndex = session.Connected == null ? 0 : 2;
         }
         private void ClearWorkingStatus(bool cancelPending = true)
@@ -818,7 +847,7 @@ namespace Altium17Cloud
             logout.IsEnabled = !busy && (session.SignedIn || session.Connected != null || gitToken.Password.Length > 0 || accessToken.Password.Length > 0);
             createProject.IsEnabled = refresh.IsEnabled = open.IsEnabled = !busy && session.Connected != null;
             useProject.IsEnabled = !busy && session.Connected != null && projectGrid?.SelectedItem is CloudProject project && projectView.Contains(project) && !string.IsNullOrEmpty(project.RepositoryUrl);
-            clone.IsEnabled = !busy && followProject.IsChecked != true;
+            clone.IsEnabled = !busy && (preparingClone || followProject.IsChecked != true);
             gitRefresh.IsEnabled = !busy && (followProject.IsChecked != true || monitorFolder != null);
             fetch.IsEnabled = !busy && workingStatus != null;
             pull.IsEnabled = push.IsEnabled = !busy && workingStatus?.Branch == "master";
