@@ -39,6 +39,7 @@ internal static partial class Program
     {
         if (args.Contains("--sleep")) { await Task.Delay(30000); return; }
         if (args.Contains("--large-output")) { Console.Write(new string('x', 5 * 1024 * 1024)); return; }
+        if (args.Contains("--progress-stream")) { Console.Error.Write("Receiving ob"); await Task.Delay(50); Console.Error.Write("jects: 42% (42/100)\r"); await Task.Delay(1500); Console.Error.Write("Resolving deltas: 100% (10/10)"); return; }
         if (args.Contains("--version")) { Console.WriteLine("git version 2.30.0"); return; }
         foreach (string bad in new[] { "", "http://afs.365.altium.com/project.git", "https://secret@afs.365.altium.com/project.git", "https://altium.com.attacker.test/repo", "https://afs.365.altium.com:444/repo", "https://afs.365.altium.com/repo?token=x", "https://afs.365.altium.com/repo#x" })
             await Reject(() => Task.FromResult(WorkspaceGit.ValidateRemote(bad)), "rejects unsafe repository URL");
@@ -170,6 +171,17 @@ internal static partial class Program
             await Reject(() => new ProcessGitRunner(self).RunAsync(network, None), "older Git is rejected before receiving credentials", "2.31");
             await ServerSaveChecks(root, bare);
             await EmptyProjectChecks(root);
+            var progressLines = new List<string>(); var firstProgress = new TaskCompletionSource<bool>();
+            var progressCommand = new GitCommand { WorkingDirectory = root, ErrorLine = line => { progressLines.Add(line); firstProgress.TrySetResult(true); } };
+            if (Path.GetFileNameWithoutExtension(self) == "dotnet") progressCommand.Arguments.Add(Assembly.GetEntryAssembly().Location);
+            progressCommand.Arguments.Add("--progress-stream");
+            var progressTask = new ProcessGitRunner(self).RunAsync(progressCommand, None);
+            Require(await Task.WhenAny(firstProgress.Task, Task.Delay(10000)) == firstProgress.Task && !progressTask.IsCompleted, "clone progress arrives while the child process is still running");
+            await progressTask;
+            Require(progressLines.Count == 2 && GitCloneProgress.Parse(progressLines[0])?.Percent == 42 && GitCloneProgress.Parse(progressLines[1])?.Percent == 100,
+                "progress handles fragmented writes, carriage returns and final unterminated lines");
+            Require(GitCloneProgress.Parse("remote: Compressing objects: 25%")?.Phase == "Compressing objects" && GitCloneProgress.Parse("Receiving objects: 101%") == null && GitCloneProgress.Parse("private server error") == null,
+                "progress reports only recognized phases and valid percentages");
             await SyncChecks(root);
             await DiscardChecks(root);
             Console.WriteLine(passed + " Git checks passed.");
@@ -278,7 +290,7 @@ internal static partial class Program
         public async Task<GitResult> RunAsync(GitCommand original, CancellationToken cancellation)
         {
             Commands.Add(original);
-            var mapped = new GitCommand { WorkingDirectory = original.WorkingDirectory };
+            var mapped = new GitCommand { WorkingDirectory = original.WorkingDirectory, ErrorLine = original.ErrorLine };
             mapped.Arguments.AddRange(original.Arguments); foreach (var pair in original.Environment) mapped.Environment[pair.Key] = pair.Value;
             string verb = original.Arguments[2];
             if (verb == "push" && FailNextPush) { FailNextPush = false; return new GitResult { ExitCode = 128, Error = "Authentication failed: private-server-body " + Token }; }

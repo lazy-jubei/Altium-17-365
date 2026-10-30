@@ -164,6 +164,13 @@ static class Program
             Require(Field<CheckBox>(view, "followProject").IsChecked == true && clone.IsEnabled, "editing the clone destination retains synchronization");
             project.Name = "../CON:unsafe/part"; Call(view, "PrepareClone");
             Require(Path.GetDirectoryName(view.WorkingFolder) == Path.GetDirectoryName(expected), "project names cannot escape the default clone root");
+            foreach (string name in new[] { "CON", "nul.txt", "LPT¹", "name. ", "a:b?c*", new string('a', 300), ".." })
+            {
+                project.Name = name; Call(view, "PrepareClone");
+                string leaf = Path.GetFileName(view.WorkingFolder);
+                Require(leaf.Length > 0 && leaf.Length <= 120 && leaf == leaf.TrimEnd(' ', '.') && !leaf.Any(c => "<>:\"/\\|?*".Contains(c)) &&
+                    !new[] { "CON", "NUL", "LPT¹" }.Contains(leaf.Split('.')[0].ToUpperInvariant()), "Windows folder name is safe for " + name.Substring(0, Math.Min(name.Length, 16)));
+            }
             view.FollowCurrentProject(); await Follow(view);
             Require(!Field<bool>(view, "preparingClone"), "opening a project resumes active-project synchronization");
         }

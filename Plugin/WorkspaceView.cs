@@ -93,6 +93,7 @@ namespace Altium17Cloud
         private CancellationTokenSource operation;
         private bool disposed;
         private bool preparingClone;
+        private readonly ProgressBar cloneProgress = new ProgressBar { Minimum = 0, Maximum = 100, Height = 14, Visibility = Visibility.Collapsed, Margin = new Thickness(0, 4, 0, 6) };
         private static HttpClient CreateHttp(TimeSpan timeout) => new HttpClient(new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false, SslProtocols = SslProtocols.Tls12 }) { Timeout = timeout };
         private static TextBlock Label(string text) => new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 6) };
         private static Button Button(string text) => new Button { Content = text, Padding = new Thickness(10, 5, 10, 5), Margin = new Thickness(0, 4, 6, 4) };
@@ -114,7 +115,7 @@ namespace Altium17Cloud
             DockPanel.SetDock(logout, Dock.Right); header.Children.Add(logout); header.Children.Add(connection);
             DockPanel.SetDock(header, Dock.Top); layout.Children.Add(header);
             logout.Click += async (_, __) => await RunAsync(_ => { Disconnect(true); return Task.CompletedTask; }, "Logging out…", needsWorkingCopy: false);
-            var footer = new StackPanel(); footer.Children.Add(fetchNotice); footer.Children.Add(status); footer.Children.Add(cancel);
+            var footer = new StackPanel(); footer.Children.Add(fetchNotice); footer.Children.Add(status); footer.Children.Add(cloneProgress); footer.Children.Add(cancel);
             DockPanel.SetDock(footer, Dock.Bottom); layout.Children.Add(footer);
             layout.Children.Add(tabs); Content = layout;
             cancel.Visibility = Visibility.Collapsed; cancel.HorizontalAlignment = HorizontalAlignment.Left;
@@ -297,7 +298,8 @@ namespace Altium17Cloud
             var invalid = Path.GetInvalidFileNameChars().Concat("<>:\"/\\|?*").ToArray();
             name = new string(name.Select(c => c < 32 || invalid.Contains(c) ? '_' : c).ToArray()).Trim().TrimEnd('.');
             if (string.IsNullOrWhiteSpace(name) || name == "." || name == "..") name = "Project";
-            if (System.Text.RegularExpressions.Regex.IsMatch(name.Split('.')[0], @"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) name = "_" + name;
+            if (System.Text.RegularExpressions.Regex.IsMatch(name.Split('.')[0], @"^(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])$", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) name = "_" + name;
+            if (name.Length > 120) name = name.Substring(0, char.IsHighSurrogate(name[119]) ? 119 : 120).TrimEnd(' ', '.');
             string root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonDocuments), "Altium", "Projects");
             string folder = Path.Combine(root, name);
             for (int suffix = 2; Directory.Exists(folder) || File.Exists(folder); suffix++) folder = Path.Combine(root, name + " (" + suffix + ")");
@@ -377,7 +379,20 @@ namespace Altium17Cloud
             clone.Click += async (_, __) => await RunAsync(async ct =>
             {
                 var git = Git();
-                await git.CloneAsync(gitRemote.Text, gitFolder.Text, await GitTokenAsync(ct), gitReference.Text, ct);
+                cloneProgress.Visibility = Visibility.Visible; cloneProgress.IsIndeterminate = true;
+                bool reporting = true;
+                var progress = new Progress<GitCloneProgress>(update =>
+                {
+                    if (!reporting || disposed) return;
+                    cloneProgress.IsIndeterminate = false; cloneProgress.Value = update.Percent;
+                    status.Text = update.Phase + ": " + update.Percent + "%";
+                });
+                try
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(gitFolder.Text)));
+                    await git.CloneAsync(gitRemote.Text, gitFolder.Text, await GitTokenAsync(ct), gitReference.Text, ct, progress);
+                }
+                finally { reporting = false; cloneProgress.Visibility = Visibility.Collapsed; }
                 await RefreshGitAsync(ct);
                 if (workingStatus.IsUnborn && changes.Count == 0 && gitProject != null)
                 {

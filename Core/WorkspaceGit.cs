@@ -15,8 +15,20 @@ namespace Altium17Cloud
     public sealed class GitCommand
     {
         public string WorkingDirectory { get; set; }
+        public Action<string> ErrorLine { get; set; }
         public List<string> Arguments { get; } = new List<string>();
         public Dictionary<string, string> Environment { get; } = new Dictionary<string, string>();
+    }
+    public sealed class GitCloneProgress
+    {
+        public string Phase { get; private set; }
+        public int Percent { get; private set; }
+        public static GitCloneProgress Parse(string line)
+        {
+            var match = Regex.Match((line ?? "").TrimStart('\ufeff'), @"^(?:remote: )?(Counting objects|Compressing objects|Receiving objects|Resolving deltas|Updating files|Checking out files):\s+(\d{1,3})%", RegexOptions.CultureInvariant);
+            return match.Success && int.TryParse(match.Groups[2].Value, out int percent) && percent <= 100 ?
+                new GitCloneProgress { Phase = match.Groups[1].Value, Percent = percent } : null;
+        }
     }
     public sealed class GitResult
     {
@@ -112,7 +124,7 @@ namespace Altium17Cloud
                         try
                         {
                             var output = ReadAsync(process.StandardOutput, stop);
-                            var error = ReadAsync(process.StandardError, stop);
+                            var error = ReadAsync(process.StandardError, stop, command.ErrorLine);
                             process.StandardInput.Close();
                             await Task.Run(() => process.WaitForExit()).ConfigureAwait(false);
                             string[] streams = await Task.WhenAll(output, error).ConfigureAwait(false);
@@ -125,10 +137,11 @@ namespace Altium17Cloud
                 }
             }
         }
-        private static async Task<string> ReadAsync(StreamReader reader, Action stop)
+        private static async Task<string> ReadAsync(StreamReader reader, Action stop, Action<string> line = null)
         {
             var result = new StringBuilder();
             var buffer = new char[4096];
+            var pending = new StringBuilder();
             int count;
             while ((count = await reader.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false)) != 0)
             {
@@ -138,7 +151,14 @@ namespace Altium17Cloud
                     throw new GitOperationException("Git returned too much output. Use an external Git client for this working copy.");
                 }
                 result.Append(buffer, 0, count);
+                if (line != null) for (int i = 0; i < count; i++)
+                {
+                    char c = buffer[i];
+                    if (c == '\r' || c == '\n') { if (pending.Length > 0) line(pending.ToString()); pending.Clear(); }
+                    else if (pending.Length < 4096) pending.Append(c);
+                }
             }
+            if (line != null && pending.Length > 0) line(pending.ToString());
             return result.ToString();
         }
         // Cancel Git's HTTP/helper children too; killing just git.exe can leave its pipes open.
@@ -291,7 +311,7 @@ namespace Altium17Cloud
         }
         public Task CloneAsync(string remote, string folder, string token, CancellationToken cancellation) =>
             CloneAsync(remote, folder, token, null, cancellation);
-        public async Task CloneAsync(string remote, string folder, string token, string reference, CancellationToken cancellation)
+        public async Task CloneAsync(string remote, string folder, string token, string reference, CancellationToken cancellation, IProgress<GitCloneProgress> progress = null)
         {
             ValidateRemote(remote); folder = Folder(folder);
             if (File.Exists(folder) || (Directory.Exists(folder) && Directory.EnumerateFileSystemEntries(folder).Any()))
@@ -299,7 +319,7 @@ namespace Altium17Cloud
             string parent = System.IO.Path.GetDirectoryName(folder);
             if (parent == null || !Directory.Exists(parent)) throw new ArgumentException("The parent of the clone folder must already exist.");
             // Preserve repository bytes when this checkout is also used by a macOS Git client.
-            var arguments = new List<string> { "clone", "--config", "core.autocrlf=false", "--origin", "origin" };
+            var arguments = new List<string> { "clone", "--progress", "--config", "core.autocrlf=false", "--origin", "origin" };
             if (!string.IsNullOrWhiteSpace(reference))
             {
                 reference = Folder(reference);
@@ -321,7 +341,10 @@ namespace Altium17Cloud
                 arguments.AddRange(new[] { "--branch", "master" });
             }
             arguments.AddRange(new[] { "--", remote, folder });
-            await RunAsync(Command(parent, arguments, remote, token), cancellation).ConfigureAwait(false);
+            var cloneCommand = Command(parent, arguments, remote, token);
+            cloneCommand.Environment["LC_ALL"] = "C";
+            cloneCommand.ErrorLine = line => { var update = GitCloneProgress.Parse(line); if (update != null) progress?.Report(update); };
+            await RunAsync(cloneCommand, cancellation).ConfigureAwait(false);
             if (empty && !await HasHeadAsync(folder, cancellation).ConfigureAwait(false))
                 await RunAsync(Command(folder, new[] { "symbolic-ref", "HEAD", "refs/heads/master" }), cancellation).ConfigureAwait(false);
         }
