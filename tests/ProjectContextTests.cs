@@ -174,6 +174,29 @@ static class Program
             view.FollowCurrentProject(); await Follow(view);
             Require(!Field<bool>(view, "preparingClone"), "opening a project resumes active-project synchronization");
         }
+        string cloneRoot = Path.Combine(root, "auto open"); Directory.CreateDirectory(cloneRoot);
+        string nested = Path.Combine(cloneRoot, "Design"); Directory.CreateDirectory(nested);
+        string projectPath = Path.Combine(nested, "Board.PrjPcb"); File.WriteAllText(projectPath, "fixture");
+        string opened = null;
+        using (var view = new WorkspaceView(path => opened = path, docs, Path.Combine(root, "auto settings", "settings.json")))
+        {
+            Field<DispatcherTimer>(view, "monitorTimer").Stop();
+            Field<TextBox>(view, "gitFolder").Text = cloneRoot;
+            Call(view, "OpenClonedProject");
+            Require(opened == projectPath && Field<CheckBox>(view, "followProject").IsChecked == true && !Field<bool>(view, "preparingClone"), "a cloned nested project opens automatically and resumes synchronization");
+            File.WriteAllText(Path.Combine(cloneRoot, "Other.PrjPcb"), "fixture");
+            Set(view, "gitProject", new CloudProject { Name = "Board" }); opened = null;
+            Call(view, "OpenClonedProject");
+            Require(opened == projectPath, "multiple project files prefer the selected cloud project's name");
+            Directory.CreateDirectory(Path.Combine(cloneRoot, ".git")); File.WriteAllText(Path.Combine(cloneRoot, ".git", "Hidden.PrjPcb"), "fixture");
+            Require(((string[])Call(view, "ClonedProjects")).Length == 2, "automatic opening excludes Git metadata");
+        }
+        using (var view = new WorkspaceView(_ => { throw new Exception("open failed"); }, docs, Path.Combine(root, "failed open", "settings.json")))
+        {
+            Field<DispatcherTimer>(view, "monitorTimer").Stop(); Field<TextBox>(view, "gitFolder").Text = nested;
+            Call(view, "OpenClonedProject");
+            Require(File.Exists(projectPath) && Field<TextBlock>(view, "status").Text.Contains("Project cloned. Automatic opening failed"), "an editor open failure preserves the successful clone and offers manual opening");
+        }
         Console.WriteLine(checks + " project-context checks passed.");
     }
     [STAThread] static int Main()

@@ -399,7 +399,8 @@ namespace Altium17Cloud
                     NewProjectFiles.Write(gitFolder.Text, gitProject.Name);
                     await RefreshGitAsync(ct);
                 }
-                SaveSettings(); status.Text = "Project cloned. Open it to begin editing.";
+                ct.ThrowIfCancellationRequested();
+                SaveSettings(); OpenClonedProject();
             }, "Cloning project…", TimeSpan.FromHours(1));
             gitRefresh.Click += async (_, __) => await RunAsync(async ct => { await RefreshGitAsync(ct); SaveSettings(); status.Text = "Working-copy status refreshed."; }, "Reading working-copy status…");
             fetch.Click += async (_, __) => await RunAsync(async ct =>
@@ -466,6 +467,36 @@ namespace Altium17Cloud
             };
             busyControls.AddRange(new Control[] { gitRemote, gitFolder, gitToken, gitExecutable, gitReference, commitMessage, chooseFolder, chooseGit, changesGrid });
             return layout;
+        }
+        private string[] ClonedProjects()
+        {
+            var files = new List<string>(); var folders = new Stack<string>(); folders.Push(gitFolder.Text);
+            while (folders.Count > 0)
+            {
+                string folder = folders.Pop();
+                files.AddRange(Directory.EnumerateFiles(folder).Where(p => string.Equals(Path.GetExtension(p), ".PrjPcb", StringComparison.OrdinalIgnoreCase)));
+                foreach (string child in Directory.EnumerateDirectories(folder))
+                    if (!string.Equals(Path.GetFileName(child), ".git", StringComparison.OrdinalIgnoreCase) && (File.GetAttributes(child) & FileAttributes.ReparsePoint) == 0) folders.Push(child);
+            }
+            return files.OrderBy(p => p, StringComparer.OrdinalIgnoreCase).ToArray();
+        }
+        private void OpenClonedProject()
+        {
+            try
+            {
+                var files = ClonedProjects();
+                var matches = files.Where(p => string.Equals(Path.GetFileNameWithoutExtension(p), gitProject?.Name, StringComparison.OrdinalIgnoreCase)).ToArray();
+                string project = matches.Length == 1 ? matches[0] : files.Length == 1 ? files[0] : null;
+                if (project == null && files.Length > 1)
+                {
+                    using (var dialog = new System.Windows.Forms.OpenFileDialog { Title = "Choose the cloned project to open", InitialDirectory = gitFolder.Text, Filter = "Altium PCB project|*.PrjPcb", CheckFileExists = true })
+                        if ((documents == null ? dialog.ShowDialog() : dialog.ShowDialog(documents)) == System.Windows.Forms.DialogResult.OK) project = dialog.FileName;
+                }
+                if (project == null || openProjectAction == null) { status.Text = "Project cloned." + (files.Length == 0 ? " No PrjPcb file was found." : " Choose Open project to open it later."); return; }
+                openProjectAction(project); FollowCurrentProject(false); manualSetup.IsExpanded = false;
+                SaveSettings(); status.Text = "Project cloned and opened.";
+            }
+            catch { status.Text = "Project cloned. Automatic opening failed; choose Open project to open it manually."; }
         }
         private WorkspaceGit Git() => new WorkspaceGit(new ProcessGitRunner(gitExecutable.Text));
         private void Disconnect(bool logOut)
