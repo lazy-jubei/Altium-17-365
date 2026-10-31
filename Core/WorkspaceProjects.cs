@@ -11,6 +11,46 @@ using System.Threading.Tasks;
 
 namespace Altium17Cloud
 {
+    public sealed class ProjectCreationUnconfirmedException : InvalidOperationException
+    {
+        public ProjectCreationUnconfirmedException(Exception error = null)
+            : base("Project creation was not confirmed; Altium 365 may already have created it.", error) { }
+    }
+
+    public static class ProjectCreation
+    {
+        // Only refresh after an uncertain POST; never send a second creation request.
+        public static async Task<CloudProject> ConfirmAsync(string name, IEnumerable<CloudProject> previous,
+            Func<CancellationToken, Task<List<CloudProject>>> refresh, CancellationToken cancellation,
+            TimeSpan? timeout = null)
+        {
+            var known = new HashSet<string>(previous.Select(p => p.Id), StringComparer.Ordinal);
+            using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation))
+            {
+                deadline.CancelAfter(timeout ?? TimeSpan.FromSeconds(30));
+                try
+                {
+                    while (true)
+                    {
+                        deadline.Token.ThrowIfCancellationRequested();
+                        var projects = await refresh(deadline.Token);
+                        deadline.Token.ThrowIfCancellationRequested();
+                        var matches = projects.Where(p => p.Name == name && !string.IsNullOrEmpty(p.Id) && !known.Contains(p.Id))
+                            .GroupBy(p => p.Id).Select(g => g.First()).ToList();
+                        if (matches.Count == 1) return matches[0];
+                        if (matches.Count > 1)
+                            throw new InvalidOperationException("Multiple new projects with this name were found. Select the intended project in Projects.");
+                        await Task.Delay(1000, deadline.Token);
+                    }
+                }
+                catch (OperationCanceledException) when (!cancellation.IsCancellationRequested)
+                {
+                    throw new TimeoutException("Project creation could not be confirmed within 30 seconds. Refresh Projects before retrying; Altium 365 may already have created it.");
+                }
+            }
+        }
+    }
+
     public sealed class ProjectFolder
     {
         public string Id { get; set; }
@@ -137,10 +177,10 @@ namespace Altium17Cloud
             }
             catch (Exception error) when (error is OperationCanceledException || error is HttpRequestException || error is InvalidOperationException)
             {
-                throw new InvalidOperationException("Project creation was not confirmed. Refresh Projects before retrying; Altium 365 may already have created it.", error);
+                throw new ProjectCreationUnconfirmedException(error);
             }
             string reference = (string)result.GetValue("guid", StringComparison.OrdinalIgnoreCase) ?? (string)result.GetValue("projectGuid", StringComparison.OrdinalIgnoreCase);
-            if (string.IsNullOrWhiteSpace(reference)) throw new InvalidOperationException("Project creation was not confirmed. Refresh Projects before retrying.");
+            if (string.IsNullOrWhiteSpace(reference)) throw new ProjectCreationUnconfirmedException();
             return new CloudProject { ReferenceId = reference, Name = name };
         }
         public async Task<CloudProject> ProjectFromReferenceAsync(Workspace workspace, string token, string reference, CancellationToken cancellation)

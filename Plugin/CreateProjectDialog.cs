@@ -14,10 +14,11 @@ namespace Altium17Cloud
         internal CreateProjectDialog(List<ProjectFolder> folders)
         {
             Text = "Create project — Altium 365"; StartPosition = FormStartPosition.CenterParent;
-            Font = new System.Drawing.Font("Segoe UI", 9F); ClientSize = new System.Drawing.Size(460, 205);
+            Font = new System.Drawing.Font("Segoe UI", 9F); ClientSize = new System.Drawing.Size(460, 260);
             FormBorderStyle = FormBorderStyle.FixedDialog; MinimizeBox = MaximizeBox = false; ShowInTaskbar = false;
             var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(14), RowCount = 5, ColumnCount = 1 };
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            for (int row = 0; row < 5; row++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             foreach (string label in new[] { "Project name", "Workspace folder" })
             {
                 layout.Controls.Add(new Label { Text = label, AutoSize = true, Padding = new Padding(0, 4, 0, 4) });

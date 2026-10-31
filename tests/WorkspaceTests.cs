@@ -172,6 +172,38 @@ internal static class Program
                 await Reject(() => session.AllProjectsAsync(first, null, cancelled.Token), "cancellation interrupts full project loading");
             }
         }
+        var oldProject = new CloudProject { Id = "existing", Name = "Board" };
+        var newProject = new CloudProject { Id = "created", Name = "Board" };
+        int refreshes = 0;
+        var confirmed = await ProjectCreation.ConfirmAsync("Board", new[] { oldProject }, token =>
+        {
+            refreshes++;
+            return Task.FromResult(refreshes == 1 ? new List<CloudProject> { oldProject } :
+                new List<CloudProject> { oldProject, newProject, newProject });
+        }, none);
+        Require(confirmed == newProject && refreshes == 2, "refreshes until the new project appears, excluding old names and duplicate page entries");
+        await Reject(() => ProjectCreation.ConfirmAsync("Board", new[] { oldProject }, token =>
+            Task.FromResult(new List<CloudProject> { oldProject, newProject, new CloudProject { Id = "another", Name = "Board" } }), none),
+            "ambiguous new projects are not opened", "Multiple new projects");
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        await Reject(() => ProjectCreation.ConfirmAsync("Board", new[] { oldProject }, async token =>
+        {
+            await Task.Delay(10000, token);
+            return new List<CloudProject> { newProject };
+        }, none, TimeSpan.FromMilliseconds(100)), "deadline includes the refresh request", "within 30 seconds");
+        Require(clock.Elapsed < TimeSpan.FromSeconds(2), "a slow refresh cannot extend the confirmation deadline");
+        await Reject(() => ProjectCreation.ConfirmAsync("Board", new[] { oldProject }, token =>
+            Task.FromResult(new List<CloudProject> { oldProject }), none, TimeSpan.FromMilliseconds(100)),
+            "an existing same-name project cannot confirm creation", "may already have created");
+        using (var cancelled = new CancellationTokenSource())
+        {
+            cancelled.Cancel();
+            bool cancellationPreserved = false;
+            try { await ProjectCreation.ConfirmAsync("Board", new[] { oldProject }, token =>
+                Task.FromCanceled<List<CloudProject>>(token), cancelled.Token); }
+            catch (OperationCanceledException) { cancellationPreserved = true; }
+            Require(cancellationPreserved, "user cancellation is preserved instead of reported as a confirmation timeout");
+        }
         foreach (bool wrongState in new[] { false, true })
         {
             var flowError = new AuthHandler { Fail = !wrongState, WrongState = wrongState };

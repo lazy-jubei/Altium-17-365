@@ -46,6 +46,15 @@ static class Program
     static Task Run(WorkspaceView view, Func<CancellationToken, Task> action) => (Task)Call(view, "RunAsync", action, "Test operation", null, true);
     static async Task Checks(string root)
     {
+        using (var dialog = new CreateProjectDialog(new System.Collections.Generic.List<ProjectFolder> { new ProjectFolder { Id = "test", Path = "Projects/Misc" } }))
+        {
+            dialog.Show(); System.Windows.Forms.Application.DoEvents();
+            var create = (System.Windows.Forms.Control)dialog.AcceptButton;
+            var bottom = dialog.PointToClient(create.PointToScreen(new System.Drawing.Point(create.Width, create.Height)));
+            Require(bottom.Y <= dialog.ClientSize.Height && bottom.X <= dialog.ClientSize.Width,
+                "Create dialog buttons fit inside the window after DPI layout");
+            dialog.Close();
+        }
         using (var view = View(new WorkspaceDocuments(), Path.Combine(root, "connection", "settings.json")))
         {
             var state = Field<TextBlock>(view, "workspaceStatus"); var toggle = Field<Button>(view, "connect");

@@ -244,7 +244,7 @@ namespace Altium17Cloud
             grid.Columns.Add(new DataGridTextColumn { Header = "Project", Binding = new System.Windows.Data.Binding("Name"), Width = new DataGridLength(1, DataGridLengthUnitType.Star) });
             grid.Columns.Add(new DataGridTextColumn { Header = "Description", Binding = new System.Windows.Data.Binding("Description"), Width = new DataGridLength(1, DataGridLengthUnitType.Star) });
             layout.Children.Add(grid);
-            refresh.Click += async (_, __) => await RunAsync(ct => ShowProjectsAsync(null, ct), "Refreshing projects…");
+            refresh.Click += async (_, __) => await RunAsync(ct => ShowProjectsAsync(null, ct), "Refreshing");
             createProject.Click += async (_, __) => await RunAsync(async ct =>
             {
                 var folders = await session.ProjectFoldersAsync(ct);
@@ -255,10 +255,23 @@ namespace Altium17Cloud
                     var result = documents == null ? dialog.ShowDialog() : dialog.ShowDialog(documents);
                     if (result != System.Windows.Forms.DialogResult.OK) { status.Text = "Project creation cancelled."; return; }
                     status.Text = "Creating project…";
-                    created = await session.CreateProjectAsync(dialog.ProjectName, dialog.SelectedFolder, ct);
+                    string name = dialog.ProjectName;
+                    var previous = projects.ToList();
+                    try { created = await session.CreateProjectAsync(name, dialog.SelectedFolder, ct); }
+                    catch (ProjectCreationUnconfirmedException)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        status.Text = "Refreshing";
+                        created = await ProjectCreation.ConfirmAsync(name, previous, async token =>
+                        {
+                            await ShowProjectsAsync(null, token);
+                            status.Text = "Refreshing";
+                            return projects.ToList();
+                        }, ct);
+                    }
                 }
                 // Keep the successful creation visible even if the following list refresh fails.
-                projects.Add(created); projectSearch.Clear(); ApplyProjectFilter(); grid.SelectedItem = created;
+                if (!projects.Contains(created)) projects.Add(created); projectSearch.Clear(); ApplyProjectFilter(); grid.SelectedItem = created;
                 try
                 {
                     var ready = created;
@@ -266,7 +279,9 @@ namespace Altium17Cloud
                     {
                         if (attempt > 0) await Task.Delay(1000, ct);
                         status.Text = "Project created. Preparing its working copy…";
-                        ready = await session.ProjectFromReferenceAsync(created.ReferenceId, ct);
+                        ready = !string.IsNullOrEmpty(created.ReferenceId)
+                            ? await session.ProjectFromReferenceAsync(created.ReferenceId, ct)
+                            : await session.ProjectAsync(created.Id, ct);
                     }
                     if (ready == null || string.IsNullOrEmpty(ready.RepositoryUrl))
                         status.Text = "Project created. Its repository is still being prepared; refresh and clone it when ready.";
@@ -375,7 +390,7 @@ namespace Altium17Cloud
             settings.Children.Add(buttons); settings.Children.Add(gitSummary);
             DockPanel.SetDock(settings, Dock.Top); layout.Children.Add(settings);
             var commitArea = new StackPanel();
-            commitArea.Children.Add(Label("Commit message (optional; uses your configured Git author name and email)")); commitArea.Children.Add(commitMessage); commitArea.Children.Add(commit);
+            commitArea.Children.Add(Label("Commit message")); commitArea.Children.Add(commitMessage); commitArea.Children.Add(commit);
             DockPanel.SetDock(commitArea, Dock.Bottom); layout.Children.Add(commitArea);
             changesGrid.ItemsSource = changes; changesGrid.AutoGenerateColumns = false;
             changesGrid.CanUserAddRows = changesGrid.CanUserDeleteRows = false;
@@ -840,7 +855,7 @@ namespace Altium17Cloud
         private async Task ShowProjectsAsync(ProjectPage first, CancellationToken cancellation)
         {
             bool loading = true;
-            var progress = new Progress<int>(count => { if (loading && !disposed) status.Text = "Finding projects… " + count; });
+            var progress = new Progress<int>(count => { if (loading && !disposed) status.Text = "Refreshing"; });
             List<CloudProject> all;
             try { all = await session.AllProjectsAsync(first, progress, cancellation); }
             finally { loading = false; }
