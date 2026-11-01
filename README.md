@@ -1,5 +1,7 @@
 # Altium 17 · Altium 365
 
+[![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=lazy-jubei_Altium-17-365&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=lazy-jubei_Altium-17-365)
+
 A dockable Altium 365 panel for Altium Designer 17.
 
 - Detects the active project's Altium 365 working copy automatically.
